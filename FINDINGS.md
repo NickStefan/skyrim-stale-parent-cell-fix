@@ -67,9 +67,16 @@ the set, and the destructor nulls them (2026-11-16 00:34 session).
 What is still unknown: why released `AlphaTest` mist references are in the mobile persistent list
 at all (ordinary mist objects are not persistent; their flags lack `0x400`). Base Object Swapper
 swaps the base of these references from a movable static (MSTT) to a static (STAT) when they
-initialize; that is the prime suspect but unproven. Base Object Swapper's own code never deletes
-references, changes formIDs or touches cells or persistent lists (source read 2026-11-16; its
-3.4.1 "engine bug with Skyrim.esm refs" fix only changes the seed of random-chance swaps).
+initialize. Base Object Swapper's own code never deletes references, changes formIDs or touches
+cells or persistent lists (source read 2026-11-16; its 3.4.1 "engine bug with Skyrim.esm refs" fix
+only changes the seed of random-chance swaps), so the suspect is the swap's result, not the code.
+
+Strong lead (2026-11-16 12:37 session): with `_NoMoreMist_SWAP.ini` removed and nothing else
+changed, a run around Tundra Homestead produced no formID-0 leftovers at all: no sightings, nothing
+for either fix to do. With the file, every session today had its first leftover within minutes. So
+the swap of these mist objects to `AlphaTest` appears to be what creates the conditions for the bug
+(step 1). One session so far. The engine bug in steps 3 and 4 is independent of it: any released
+reference left in the persistent list would go stale the same way.
 
 ## Engine details
 
@@ -113,6 +120,8 @@ lists are guarded by the lock with ID 401119.
 - **The fix** (completing 36459 for formID-0 references): in the next session the mist was released,
   revived, then caught at step 3 and unlinked; the destroy-time backstop found nothing to clear,
   and no guard fired (12:32).
+- **The swap as the source of step 1**: the same route with `_NoMoreMist_SWAP.ini` removed gave no
+  formID-0 leftovers (12:37-12:44).
 
 ## Related reports
 

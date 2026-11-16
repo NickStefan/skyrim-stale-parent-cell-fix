@@ -21,8 +21,10 @@ In short (details, IDs and evidence in [FINDINGS.md](FINDINGS.md)):
    pointing at freed memory.
 
 Every reference seen in step 1 so far is a mist object swapped to `AlphaTest` by No More Mist
-(Base Object Swapper); why those stay in the persistent list is still open. The crash itself does
-not depend on that: any reference that goes through these steps is affected.
+(Base Object Swapper), and a run with `_NoMoreMist_SWAP.ini` removed produced none, so that swap
+appears to create the conditions for the bug. How it gets them into the persistent list is still
+open. The crash itself does not depend on it: any reference that goes through these steps is
+affected.
 
 ## What the plugin does
 

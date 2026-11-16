@@ -136,6 +136,10 @@ All times are local. Logs are in
 `Documents/My Games/Skyrim Special Edition/SKSE/` (`StaleParentCellFix.log`, `crash-*.log`).
 Every session from 2026-11-16 11:18 on ran with stress mode off, around Tundra Homestead.
 
+- **2026-11-16 12:37, without `_NoMoreMist_SWAP.ini`.** About seven minutes on the same route: no
+  formID-0 leftover seen, nothing for the source fix or the backstop to do, no guard, no access
+  violation, no HUD message. The earlier sessions had their first leftover within minutes.
+
 - **2026-11-16 12:24, source fix.** The mist was released at 12:31:06; at 12:32:10, as cell
   `000095F7` unloaded, the source fix cleared its `parentCell`. The backstop found nothing to clear;
   no watch warning, no `PREVENTED`, no access violation.
