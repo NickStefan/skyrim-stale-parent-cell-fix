@@ -83,6 +83,17 @@ destructor skipped it: enough to fix it at the source, or to state precisely wha
 
 Order: item 3 first (costs no play time), then items 1 and 2 before the next session.
 
+**Status 2026-11-16: all three are in the build, and the fix uses the exact scope above.**
+- Item 1: `TESForm::SetFormID` (14666) is hooked and every reference set to formID 0 is kept with
+  a stack (`Deletes.cpp`). Caveat: a pre-git build hooked it too and never saw the mist, so the
+  zeroing is probably a direct write. As a fallback, each scan remembers the formID of every
+  deleted persistent reference it sees, so the "first seen" line says what the reference used to
+  be and how long ago it still had that formID. That brackets when it happened.
+- Item 2: the "first seen" line says whether a formID-0 reference is still in its live cell's
+  reference list, and each cleared reference is by definition not in it.
+- If the next capture shows "no SetFormID(0) recorded", the next step is hooking 14627
+  (remove-from-form-map) or a hardware watchpoint on the formID of a known victim.
+
 ## Leads from the web (2026-11-16)
 
 - [xOBSE issue #252](https://github.com/llde/xOBSE/issues/252) (Oblivion, same engine lineage): a

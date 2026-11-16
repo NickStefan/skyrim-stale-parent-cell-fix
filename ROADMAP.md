@@ -20,10 +20,9 @@ Rough order of work. Things move up or down as test reports show what matters.
 
 - Playtest on 1.6.640: confirm the guards install, see how often each one fires, and read the `FREED:` lines
   to learn which thread frees the cell, and how long before the stale reference is used.
-- Confirm the fix in play: `cleared stale parentCell` lines, and no `PREVENTED` entries with stress
-  mode on. The fix only clears formID 0 or deleted references; a `PREVENTED` entry on a live
-  reference would mean the scope needs widening (clearing all of them was tried: about 50 per fast
-  travel, reload-safe, effect on quest markers and saving unknown).
+- Confirm the fix in play: `cleared parentCell ... not in the cell's own reference list` lines,
+  and no `PREVENTED` entries. The fix clears exactly the references the destructor skips (those
+  pointing at the cell from outside its own reference set); everything else is left to the game.
 - Find what leaves deleted references in the persistent lists; not needed for the fix, useful for
   the mods' authors. Known so far (details in REPRODUCING.md): the Tundra Homestead mist `000DA6AD`,
   base swapped to `AlphaTest` by No More Mist, ends up formID 0; runtime-created references with

@@ -48,44 +48,48 @@ crash being easy but not deterministic to hit.
 
 Static findings on the mechanism:
 
-- The cell destructor (18877) releases its references in 19410: it drops the cell's reference
-  count on each one and frees the arrays, but never clears their `parentCell` (the per-entry call
-  is an empty function). Any reference someone else still holds a count on outlives the cell with
-  a dangling `parentCell`.
+- The cell destructor (18877) releases its references in 19410, which walks only the cell's own
+  reference set (`cell+0x88`) and calls `SetParentCell(nullptr)` on each one (19458 -> 19468). A
+  reference that points at the cell from the worldspace's persistent lists but has already left
+  that set keeps a dangling `parentCell`; the persistent list's counted pointer keeps it alive.
+  (The only exception, a persistent reference in a persistent cell, does not apply to cells that
+  get destroyed in normal play.)
 - The story manager node in all three alias-fill crashes is `0x0001320E`, the CLOC (Change
   Location) event. Every location boundary crossed starts radiant quest alias fills (MoreToSay's
   Embershard Bandits, Bounty: Bandit Boss, Rare Gifts in the logs) that test candidate references
   while cells behind the player are being torn down.
 - Confirmed in play (2026-11-15): the worldspace's persistent reference lists hold the reference
   across the cell's destruction, and the cell loader (20532) re-adds it when the cell comes back.
-  The formID was not cleared through `TESForm::SetFormID`; how it reaches 0 is still unknown.
+  The formID was not cleared through `TESForm::SetFormID` (a hook on it, installed before data
+  load, never saw it); how it reaches 0 is still unknown. The game's own reference release
+  (36459) does use `SetFormID(0)`, after removing the reference from its cell and nulling its
+  `parentCell`, so that path cannot produce this state.
 
 ## What the plugin does
 
 The fix (`[Fix] bUnlinkPersistentReferences`): a worldspace holds counted pointers to its
 persistent references (`fixedPersistentRefMap`, `mobilePersistentRefs`), but destroying an exterior
-cell never clears their `parentCell`. Before a cell is destroyed, the plugin takes the lock the game
-uses for those lists (ID 401119, bounded so it can never deadlock) and sets `parentCell` to null on
-any of them still pointing at the cell that has formID 0 or the deleted flag. A purged exterior cell has usually lost its worldSpace pointer
+cell only nulls `parentCell` on the references in the cell's own reference set. Before a cell is
+destroyed, the plugin takes the lock the game uses for those lists (ID 401119, bounded so it can
+never deadlock), finds the ones pointing at the cell, and sets `parentCell` to null on each that
+is not in the cell's own set: exactly the references the destructor would leave dangling,
+whatever their formID or flags. A purged exterior cell has usually lost its worldSpace pointer
 by then, so in that case every worldspace's lists are checked; the slowest check is logged.
 
 Null is a state the cell loader (ID 20532) already handles. For each reference in the loading
 cell's fixed-map entry it calls `AddReference` when `parentCell` is null; when it isn't, it first
 reads a flag from that cell, which with a stale pointer is a read of freed memory. The mobile list
-is re-added the same way. Each cleared reference is logged as "cell X destroyed: cleared stale
-parentCell of persistent reference ..." with its formID, base, flags and which list it was in.
+is re-added the same way. Each cleared reference is logged as "cell X destroyed: cleared parentCell
+of persistent reference ...: not in the cell's own reference list ..." with its formID, base,
+flags and which list it was in.
 
-Why only formID 0 or deleted ones: just before destruction many live persistent references still
-point at the cell (a build that cleared them all cleared about 50 on one fast travel), but the
-destructor itself re-points those: checked a millisecond later, at the next destruction in the
-same burst (2026-11-16 00:27), every one of them pointed elsewhere, and checked right after it
-returns (00:46), all were null, `FF......` deleted leftovers included. Only formID-0 references
-have been proven to stay stale; the fix also clears deleted ones, redundantly but harmlessly. Clearing live ones early is
-unnecessary, and what reads a live reference's cell in between (quest markers, Papyrus
-`GetParentCell`, saving) is unknown. Every crash so far was on a leftover
-with formID 0, the guarded ones also with the deleted flag (the `AlphaTest` swap of the Tundra
-Homestead mist), so the fix is limited to those and live references keep the game's behavior. A
-live reference hitting the same race would be caught by the guards and show up as `PREVENTED`.
+Why not all of them: just before destruction many persistent references still point at the cell
+(a build that cleared them all cleared about 50 on one fast travel), but they are in its set and
+the destructor nulls them itself (checked right after it returns, 2026-11-16 00:46: all null,
+`FF......` deleted leftovers included). Clearing those early would only change what reads their
+cell in between (quest markers, Papyrus `GetParentCell`, saving) for no gain. Earlier builds used
+"formID 0 or deleted" as the rule; that was a symptom of being outside the set (every proven
+stale reference had formID 0), not the cause.
 
 Guards, the backstop if something is missed (entry detours, prologue bytes verified first; a mismatch skips that guard and logs it):
 
@@ -113,12 +117,16 @@ Diagnostics:
   `TESForm::SetDelete`, 14636), and the last 8192 deletions are kept with call stacks. Under each
   reference the fix clears, the log says who deleted it, when, and what cell it was in then; or
   that no deletion was recorded this session (for example, it was already deleted in the save).
+  The same setting hooks `TESForm::SetFormID` (14666, all paths) and keeps the last 4096
+  references set to formID 0, with call stacks.
 - After each cell destructor returns, the references the fix left alone are checked. Any still
   pointing at the destroyed cell gets a "still points at it afterwards" warning and a HUD notice;
-  that would mean the fix's scope is too narrow.
+  that would mean the destructor skipped a reference in its own set.
 - formID-0 sightings: the first time the destroy hook sees each formID-0 persistent reference, it
-  logs its base, flags, position, where its `parentCell` points (null, a live cell, or a destroyed
-  one and who destroyed it) and its deletion history, with a HUD notice.
+  logs its base, flags, position, where its `parentCell` points (null; a live cell, and whether
+  the reference is still in that cell's own reference list; or a destroyed one and who destroyed
+  it), its deletion and formID history, and the formID it had when a scan last saw it deleted,
+  with a HUD notice.
 - Holders: under each cleared reference the fix also logs whether it is forced persistent (a quest
   alias or script holding it), an actor's life state, and the quest aliases filled with it (quest
   formID, editor ID, alias name, whether the quest is running).
@@ -160,7 +168,7 @@ What has to happen for the crash, and routes and settings that trigger it reliab
    (then `player.modav carryweight 1` so it applies); trying without SkiingInSkyrim tells whether it
    is involved. To make the race far more likely, set `bPurgeCellsOnLocationChange=1` under
    `[Stress]` in the INI (a test session only; the log says "STRESS MODE" when it is on).
-4. "cell ... destroyed: cleared stale parentCell of persistent reference" lines are the fix working. If the "a guard prevented a crash
+4. "cell ... destroyed: cleared parentCell of persistent reference" lines are the fix working. If the "a guard prevented a crash
    the fix missed" notification shows, send back `StaleParentCellFix.log` plus any new crash log, and
    don't overwrite a good save from that session. `PREVENTED` entries are a crash the fix did not
    stop; their `FREED:` lines and stacks show which cell was freed and who freed it.

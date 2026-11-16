@@ -22,10 +22,10 @@
 
 Every crash so far was on a **leftover**: a reference with formID 0, or a runtime-created one
 (`FF......`), with the deleted flag (`0x20`). A script or mod deleted the object, but it was still
-in the worldspace's persistent list. The cell's destructor sets `parentCell` to null on live
-references and on the `FF......` deleted leftovers seen at Dawnstar (2026-11-16 00:34); only
-formID-0 references have been proven to stay stale. The fix clears both kinds of leftover, which
-is redundant but harmless for the ones the destructor handles.
+in the worldspace's persistent list. The cell's destructor sets `parentCell` to null only on the
+references in the cell's own reference list (disassembly, 2026-11-16), which included the live
+ones and the `FF......` deleted leftovers seen at Dawnstar (00:34 session). The formID-0 mist was
+not in it, and stayed stale. The fix now clears exactly the references outside that list.
 
 ## Why it is hard to hit
 
@@ -113,11 +113,11 @@ actually crashed or tripped a guard had formID 0; these `FF......` leftovers hav
 ## Checking the fix
 
 With `[Fix] bUnlinkPersistentReferences=1` (the default), the same steps should produce
-`cell ... destroyed: cleared stale parentCell of persistent reference ...` lines instead of
-`PREVENTED` entries or crashes. Each line gives the reference's formID, base, flags and list.
-Healthy references are never cleared, so fast travel alone usually logs nothing. A `PREVENTED`
-entry on a reference with a real formID and no deleted flag would mean the fix's scope is too
-narrow. To see the crash again for comparison, set the fix to 0 (and `[Guards] bEnabled=0`).
+`cell ... destroyed: cleared parentCell of persistent reference ...: not in the cell's own
+reference list` lines instead of `PREVENTED` entries or crashes. Each line gives the reference's
+formID, base, flags and list. References in the cell's list are left to the destructor, so fast
+travel alone usually logs nothing. A `PREVENTED` entry or a "still points at it afterwards"
+warning would mean something besides the destructor gap is at work. To see the crash again for comparison, set the fix to 0 (and `[Guards] bEnabled=0`).
 
 ## Sessions
 

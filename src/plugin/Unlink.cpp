@@ -62,8 +62,6 @@ namespace StaleParentCellFix::Unlink
             std::uint32_t* count;
         };
 
-        inline constexpr std::uint32_t DeletedFlag = 0x20;
-
         std::optional<PersistentRefsLock> lock;
         std::atomic<std::uint64_t> unlinked{ 0 };
         std::atomic<std::uint64_t> skipped{ 0 };
@@ -106,9 +104,25 @@ namespace StaleParentCellFix::Unlink
             std::array<float, 3> position;
             std::uintptr_t parent;
             const char* list;
+            std::uint32_t lastFormID;  // 0 if never seen with one
+            std::uint64_t lastSeen;
         };
         thread_local std::vector<Sighting> sightings;
-        std::unordered_set<std::uintptr_t> sighted;  // only touched while holding the game's lock
+        // Only touched while holding the game's lock.
+        std::unordered_set<std::uintptr_t> sighted;
+        // The formID each deleted persistent reference had when a scan last saw it, so a formID 0
+        // sighting can say what the reference was and narrow down when its ID was cleared.
+        struct Known
+        {
+            std::uint32_t formID;
+            std::uint64_t time;
+        };
+        std::unordered_map<std::uintptr_t, Known> knownDeleted;
+        constexpr std::size_t KnownLimit = 100000;
+        inline constexpr std::uint32_t DeletedFlag = 0x20;
+        std::uint64_t firstScan = 0;
+
+        std::unordered_set<std::uintptr_t> CellSet(std::uintptr_t cell);
 
         std::uint32_t BaseFormID(std::uintptr_t reference)
         {
@@ -123,12 +137,29 @@ namespace StaleParentCellFix::Unlink
         void Sight(std::uintptr_t address, const char* list)
         {
             const auto header = Forms::ReadHeader(address);
-            if (!header || header->formID != 0 || !sighted.insert(address).second) {
+            if (!header) {
                 return;
             }
+            if (header->formID != 0) {
+                if (header->flags & DeletedFlag) {
+                    if (knownDeleted.size() > KnownLimit) {
+                        knownDeleted.clear();
+                    }
+                    knownDeleted.insert_or_assign(address, Known{ header->formID, GetTickCount64() });
+                } else if (!knownDeleted.empty()) {
+                    knownDeleted.erase(address);  // the address now holds another, live reference
+                }
+                return;
+            }
+            if (!sighted.insert(address).second) {
+                return;
+            }
+            const auto known = knownDeleted.find(address);
             sightings.push_back({ address, BaseFormID(address), header->flags,
                 Memory::Read<std::array<float, 3>>(address + Forms::Offset::RefPosition).value_or(std::array<float, 3>{}),
-                Memory::Read<std::uintptr_t>(address + Forms::Offset::RefParentCell).value_or(0), list });
+                Memory::Read<std::uintptr_t>(address + Forms::Offset::RefParentCell).value_or(0), list,
+                known != knownDeleted.end() ? known->second.formID : 0,
+                known != knownDeleted.end() ? known->second.time : 0 });
         }
 
         void LogSightings()
@@ -139,7 +170,8 @@ namespace StaleParentCellFix::Unlink
                     parent = "null";
                 } else if (Forms::IsLiveCell(s.parent)) {
                     const auto header = Forms::ReadHeader(s.parent);
-                    parent = std::format("live cell {:08X}", header ? header->formID : 0);
+                    parent = std::format("live cell {:08X}, {} its own reference list", header ? header->formID : 0,
+                        CellSet(s.parent).contains(s.address) ? "still in" : "NOT in");
                 } else if (auto freed = Frees::Brief(s.parent); !freed.empty()) {
                     parent = std::move(freed);
                 } else {
@@ -149,6 +181,15 @@ namespace StaleParentCellFix::Unlink
                              "position ({:.0f}, {:.0f}, {:.0f}); parentCell 0x{:X}: {}",
                     s.address, s.list, s.baseFormID, s.flags, s.position[0], s.position[1], s.position[2], s.parent,
                     parent);
+                const auto now = GetTickCount64();
+                if (s.lastFormID != 0) {
+                    spdlog::info("  0x{:X} was formID {:08X}, deleted, when last checked {} ms ago", s.address,
+                        s.lastFormID, now - s.lastSeen);
+                } else {
+                    spdlog::info("  0x{:X} never seen with a formID while deleted; the first check this session was {} "
+                                 "ms ago",
+                        s.address, now - firstScan);
+                }
                 if (const auto history = Deletes::Describe(s.address); !history.empty()) {
                     spdlog::info("  0x{:X} {}", s.address, history);
                 }
@@ -168,40 +209,90 @@ namespace StaleParentCellFix::Unlink
             std::uint32_t formID;
             std::uint32_t baseFormID;
             std::uint32_t flags;
+            bool inCellSet;
         };
         thread_local std::vector<Left> left;
         std::uint64_t stayedStale = 0;
 
-        void Unlink(RE::TESObjectREFR* reference, std::uintptr_t cell, const char* list)
+        // Persistent-list references pointing at the cell being destroyed, found by Scan.
+        struct Pointing
+        {
+            RE::TESObjectREFR* reference;
+            const char* list;
+        };
+        thread_local std::vector<Pointing> pointing;
+
+        void Collect(RE::TESObjectREFR* reference, std::uintptr_t cell, const char* list)
         {
             if (!reference) {
                 return;
             }
             const auto address = reinterpret_cast<std::uintptr_t>(reference);
             Sight(address, list);
-            auto* parentCell = reinterpret_cast<std::uintptr_t*>(address + Forms::Offset::RefParentCell);
-            if (*parentCell != cell) {
-                return;
+            if (*reinterpret_cast<std::uintptr_t*>(address + Forms::Offset::RefParentCell) == cell) {
+                pointing.push_back({ reference, list });
             }
-            // Live persistent references are left to the game's destructor, which nulls them; every
-            // crash so far was on a formID 0 leftover.
-            const auto header = Forms::ReadHeader(address);
-            if (!header) {
-                return;
+        }
+
+        // The cell's own reference set (a BSTSet at +0x90): the only list its destructor walks
+        // (19410 -> 19458 -> 19468, which calls SetParentCell(nullptr) on each reference).
+        inline constexpr std::uintptr_t CellSetCapacity = 0x94;
+        inline constexpr std::uintptr_t CellSetEntries = 0xB0;
+
+        struct CellSetEntry
+        {
+            std::uintptr_t reference;
+            std::uintptr_t next;  // null when the slot is empty
+        };
+        static_assert(sizeof(CellSetEntry) == 0x10);
+
+        std::unordered_set<std::uintptr_t> CellSet(std::uintptr_t cell)
+        {
+            std::unordered_set<std::uintptr_t> out;
+            const auto capacity = Memory::Read<std::uint32_t>(cell + CellSetCapacity).value_or(0);
+            const auto entries = Memory::Read<std::uintptr_t>(cell + CellSetEntries).value_or(0);
+            if (!entries || capacity > (1u << 22)) {
+                return out;
             }
-            std::uint32_t baseFormID = 0;
-            if (const auto base = Memory::Read<std::uintptr_t>(address + Forms::Offset::RefBaseObject)) {
-                if (const auto baseHeader = Forms::ReadHeader(*base)) {
-                    baseFormID = baseHeader->formID;
+            for (std::uint32_t slot = 0; slot < capacity; ++slot) {
+                const auto entry = Memory::Read<CellSetEntry>(entries + slot * sizeof(CellSetEntry));
+                if (!entry) {
+                    break;
+                }
+                if (entry->next && entry->reference) {
+                    out.insert(entry->reference);
                 }
             }
-            const bool leftover = header->formID == 0 || (header->flags & DeletedFlag);
-            if (!clearing || !leftover) {
-                left.push_back({ address, cell, header->formID, baseFormID, header->flags });
+            return out;
+        }
+
+        // The destructor nulls parentCell only on references in the cell's own set, so the ones
+        // pointing at it from the persistent lists but missing from that set would stay stale.
+        void Decide(std::uintptr_t cell)
+        {
+            if (pointing.empty()) {
                 return;
             }
-            *parentCell = 0;
-            cleared.push_back({ RE::NiPointer{ reference }, address, header->formID, baseFormID, header->flags, list });
+            std::ranges::sort(pointing, {}, &Pointing::reference);
+            const auto [first, last] = std::ranges::unique(pointing, {}, &Pointing::reference);
+            pointing.erase(first, last);
+            const auto members = CellSet(cell);
+            for (const auto& [reference, list] : pointing) {
+                const auto address = reinterpret_cast<std::uintptr_t>(reference);
+                const auto header = Forms::ReadHeader(address);
+                if (!header) {
+                    continue;
+                }
+                const auto baseFormID = BaseFormID(address);
+                const bool inCellSet = members.contains(address);
+                if (inCellSet || !clearing) {
+                    left.push_back({ address, cell, header->formID, baseFormID, header->flags, inCellSet });
+                    continue;
+                }
+                *reinterpret_cast<std::uintptr_t*>(address + Forms::Offset::RefParentCell) = 0;
+                cleared.push_back({ RE::NiPointer{ reference }, address, header->formID, baseFormID, header->flags, list });
+            }
+            pointing.clear();
         }
 
         std::string_view LifeState(RE::ACTOR_LIFE_STATE state)
@@ -254,17 +345,16 @@ namespace StaleParentCellFix::Unlink
         void Log(std::uint32_t cellFormID)
         {
             for (const auto& entry : cleared) {
-                spdlog::info("cell {:08X} destroyed: cleared stale parentCell of persistent reference 0x{:X} (formID "
-                             "{:08X}, base {:08X}, flags {:08X}, {} list) (#{})",
+                spdlog::warn("cell {:08X} destroyed: cleared parentCell of persistent reference 0x{:X} (formID "
+                             "{:08X}, base {:08X}, flags {:08X}, {} list): not in the cell's own reference list, so "
+                             "the destructor would have left it pointing at the freed cell (#{})",
                     cellFormID, entry.address, entry.formID, entry.baseFormID, entry.flags, entry.list, ++unlinked);
                 spdlog::info("  0x{:X} {}", entry.address, Holders(entry.reference.get()));
                 if (const auto history = Deletes::Describe(entry.address); !history.empty()) {
                     spdlog::info("  0x{:X} {}", entry.address, history);
                 }
-                if (entry.formID == 0) {
-                    Report::Notice("cleared", "StaleParentCellFix: prevented a crash on a formID 0 reference. "
-                                              "Please send StaleParentCellFix.log.");
-                }
+                Report::Notice("cleared", "StaleParentCellFix: prevented a stale cell pointer, the kind behind the "
+                                          "crash. Please send StaleParentCellFix.log.");
             }
             cleared.clear();
         }
@@ -294,7 +384,7 @@ namespace StaleParentCellFix::Unlink
         void Scan(RE::TESWorldSpace* world, std::uintptr_t cell)
         {
             for (auto& reference : world->mobilePersistentRefs) {
-                Unlink(reference.get(), cell, "mobile");
+                Collect(reference.get(), cell, "mobile");
             }
             const auto address = reinterpret_cast<std::uintptr_t>(world);
             const auto capacity = *reinterpret_cast<std::uint32_t*>(address + FixedMapCapacity);
@@ -308,7 +398,7 @@ namespace StaleParentCellFix::Unlink
                     continue;
                 }
                 for (std::uint32_t i = 0; i < entry.references->size; ++i) {
-                    Unlink(entry.references->data[i], cell, "fixed");
+                    Collect(entry.references->data[i], cell, "fixed");
                 }
             }
         }
@@ -325,6 +415,9 @@ namespace StaleParentCellFix::Unlink
                 return;
             }
             const auto start = Microseconds();
+            if (firstScan == 0) {
+                firstScan = GetTickCount64();
+            }
             // A purged exterior cell has usually lost its worldSpace pointer by the time it is
             // destroyed, so without one every worldspace is checked.
             const auto worldSpace = Memory::Read<std::uintptr_t>(address + Forms::Offset::CellWorldSpace).value_or(0);
@@ -337,6 +430,7 @@ namespace StaleParentCellFix::Unlink
                     }
                 }
             }
+            Decide(address);
             lock->Unlock();
             const auto elapsed = Microseconds() - start;
             Log(cellFormID);
@@ -351,23 +445,32 @@ namespace StaleParentCellFix::Unlink
             }
         }
 
-        // The narrowed fix relies on the destructor nulling every reference it left alone.
+        // The fix relies on the destructor nulling every reference in the cell's own set.
         void AfterDestroy(std::uint32_t cellFormID)
         {
             for (const auto& entry : left) {
                 const auto parent =
                     Memory::Read<std::uintptr_t>(entry.address + Forms::Offset::RefParentCell).value_or(0);
                 if (parent != entry.cell) {
+                    if (!entry.inCellSet) {
+                        spdlog::warn("cell {:08X} destroyed: persistent reference 0x{:X} (formID {:08X}) was not in "
+                                     "the cell's own reference list, yet was re-pointed anyway",
+                            cellFormID, entry.address, entry.formID);
+                    }
                     continue;
                 }
                 spdlog::warn("cell {:08X} destroyed: persistent reference 0x{:X} (formID {:08X}, base {:08X}, flags "
-                             "{:08X}) still points at it afterwards (#{})",
-                    cellFormID, entry.address, entry.formID, entry.baseFormID, entry.flags, ++stayedStale);
+                             "{:08X}) still points at it afterwards; {} (#{})",
+                    cellFormID, entry.address, entry.formID, entry.baseFormID, entry.flags,
+                    entry.inCellSet ? "it was in the cell's own reference list, so the destructor skipped it for "
+                                      "another reason"
+                                    : "it was not in the cell's own reference list (fix off)",
+                    ++stayedStale);
                 if (const auto history = Deletes::Describe(entry.address); !history.empty()) {
                     spdlog::info("  0x{:X} {}", entry.address, history);
                 }
-                Report::Notice("stayed stale", "StaleParentCellFix: a reference outside the fix's scope was left "
-                                               "pointing at a destroyed cell. Please send StaleParentCellFix.log.");
+                Report::Notice("stayed stale", "StaleParentCellFix: a reference was left pointing at a destroyed "
+                                               "cell. Please send StaleParentCellFix.log.");
             }
             left.clear();
         }
@@ -391,8 +494,8 @@ namespace StaleParentCellFix::Unlink
         lock.emplace();
         REL::Relocation<std::uintptr_t> cell{ RE::VTABLE_TESObjectCELL[0] };
         cellDelete = reinterpret_cast<Deleter>(cell.write_vfunc(0, &CellDelete));
-        spdlog::info(clear ? "unlinking formID 0 and deleted persistent references from exterior cells before they "
-                             "are destroyed; checking the rest afterwards"
+        spdlog::info(clear ? "before a cell is destroyed, unlinking persistent references that point at it but are "
+                             "not in its own reference list; checking the rest afterwards"
                            : "fix off: only checking afterwards which persistent references still point at destroyed "
                              "cells");
     }
