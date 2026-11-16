@@ -79,6 +79,7 @@ namespace StaleParentCellFix::Unlink
 
         struct Cleared
         {
+            RE::NiPointer<RE::TESObjectREFR> reference;  // keeps it alive until it is logged
             std::uintptr_t address;
             std::uint32_t formID;
             std::uint32_t baseFormID;
@@ -113,7 +114,54 @@ namespace StaleParentCellFix::Unlink
                     baseFormID = baseHeader->formID;
                 }
             }
-            cleared.push_back({ address, header->formID, baseFormID, header->flags, list });
+            cleared.push_back({ RE::NiPointer{ reference }, address, header->formID, baseFormID, header->flags, list });
+        }
+
+        std::string_view LifeState(RE::ACTOR_LIFE_STATE state)
+        {
+            using enum RE::ACTOR_LIFE_STATE;
+            switch (state) {
+            case kAlive: return "alive";
+            case kDying: return "dying";
+            case kDead: return "dead";
+            case kUnconcious: return "unconscious";
+            case kReanimate: return "reanimated";
+            case kRecycle: return "recycle";
+            case kRestrained: return "restrained";
+            case kEssentialDown: return "essential down";
+            case kBleedout: return "bleedout";
+            default: return "unknown";
+            }
+        }
+
+        // What may be keeping a deleted reference in the persistent lists: forced persistence (set
+        // while a quest alias or script holds it) and the quest aliases filled with it.
+        std::string Holders(RE::TESObjectREFR* reference)
+        {
+            const bool forced = reference->inGameFormFlags.any(RE::TESForm::InGameFormFlag::kForcedPersistent);
+            auto out = std::format("forced persistent {}", forced ? "yes" : "no");
+            if (reference->GetFormType() == RE::FormType::ActorCharacter) {
+                const auto state = static_cast<RE::Actor*>(reference)->AsActorState()->GetLifeState();
+                out += std::format(", life state {} ({})", LifeState(state), std::to_underlying(state));
+            }
+            const auto* aliases = reference->extraList.GetByType<RE::ExtraAliasInstanceArray>();
+            if (!aliases) {
+                return out + ", no quest aliases";
+            }
+            RE::BSReadLockGuard guard{ aliases->lock };
+            out += std::format(", {} quest alias(es):", aliases->aliases.size());
+            for (const auto* instance : aliases->aliases) {
+                if (!instance) {
+                    continue;
+                }
+                const auto* quest = instance->quest;
+                const auto questID = quest ? quest->GetFormID() : 0;
+                const char* questName = quest ? quest->GetFormEditorID() : nullptr;
+                const char* aliasName = instance->alias ? instance->alias->aliasName.c_str() : nullptr;
+                out += std::format(" quest {:08X} {} alias \"{}\"{};", questID, questName && *questName ? questName : "?",
+                    aliasName ? aliasName : "?", quest && quest->IsRunning() ? " (running)" : "");
+            }
+            return out;
         }
 
         void Log(std::uint32_t cellFormID)
@@ -122,6 +170,7 @@ namespace StaleParentCellFix::Unlink
                 spdlog::info("cell {:08X} destroyed: cleared stale parentCell of persistent reference 0x{:X} (formID "
                              "{:08X}, base {:08X}, flags {:08X}, {} list) (#{})",
                     cellFormID, entry.address, entry.formID, entry.baseFormID, entry.flags, entry.list, ++unlinked);
+                spdlog::info("  0x{:X} {}", entry.address, Holders(entry.reference.get()));
                 if (const auto history = Deletes::Describe(entry.address); !history.empty()) {
                     spdlog::info("  0x{:X} {}", entry.address, history);
                 }

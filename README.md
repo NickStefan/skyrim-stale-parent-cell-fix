@@ -110,6 +110,9 @@ Diagnostics:
   `TESForm::SetDelete`, 14636), and the last 8192 deletions are kept with call stacks. Under each
   reference the fix clears, the log says who deleted it, when, and what cell it was in then; or
   that no deletion was recorded this session (for example, it was already deleted in the save).
+- Holders: under each cleared reference the fix also logs whether it is forced persistent (a quest
+  alias or script holding it), an actor's life state, and the quest aliases filled with it (quest
+  formID, editor ID, alias name, whether the quest is running).
 - Change Location history: the queueing of the last story manager CLOC events is recorded with
   call stacks (32 frames, like the lifetime history) and added to every report. The quests these
   events start run later on a worker thread, so whatever caused the event (the engine, a mod, fast
