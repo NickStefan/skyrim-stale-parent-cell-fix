@@ -34,9 +34,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     if (settings.trackDeletes) {
         StaleParentCellFix::Deletes::Install();
     }
-    if (settings.unlink) {
-        StaleParentCellFix::Unlink::Install();
-    }
+    StaleParentCellFix::Unlink::Install(settings.unlink);
     if (settings.trackStoryEvents) {
         StaleParentCellFix::Events::Install(settings.stressPurge);
     }

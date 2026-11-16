@@ -90,7 +90,16 @@ namespace StaleParentCellFix::Unlink
         // Filled under the lock and logged after it is released: formatting call stacks is slow.
         thread_local std::vector<Cleared> cleared;
 
-        void Unlink(RE::TESObjectREFR* reference, std::uintptr_t cell, const char* list)
+        bool clearing = true;
+
+        // References left pointing at a destroyed cell, for the guards to recognise a stale read.
+        // Keyed by reference; an entry only counts while the reference still holds that pointer.
+        constexpr std::size_t StaleLimit = 200000;
+        thread_local std::vector<std::pair<std::uintptr_t, Stale>> leftStale;
+        std::mutex staleMutex;
+        std::unordered_map<std::uintptr_t, Stale> stale;
+
+        void Unlink(RE::TESObjectREFR* reference, std::uintptr_t cell, std::uint32_t cellFormID, const char* list)
         {
             if (!reference) {
                 return;
@@ -104,16 +113,22 @@ namespace StaleParentCellFix::Unlink
             // cell while it is unloaded is unknown (quest markers, saving), and every crash so far
             // was on a formID 0 or deleted leftover.
             const auto header = Forms::ReadHeader(address);
-            if (!header || (header->formID != 0 && !(header->flags & DeletedFlag))) {
+            if (!header) {
                 return;
             }
-            *parentCell = 0;
             std::uint32_t baseFormID = 0;
             if (const auto base = Memory::Read<std::uintptr_t>(address + Forms::Offset::RefBaseObject)) {
                 if (const auto baseHeader = Forms::ReadHeader(*base)) {
                     baseFormID = baseHeader->formID;
                 }
             }
+            const bool leftover = header->formID == 0 || (header->flags & DeletedFlag);
+            if (!clearing || !leftover) {
+                leftStale.push_back({ address, { cell, cellFormID, GetTickCount64(), header->formID, baseFormID,
+                                                   header->flags } });
+                return;
+            }
+            *parentCell = 0;
             cleared.push_back({ RE::NiPointer{ reference }, address, header->formID, baseFormID, header->flags, list });
         }
 
@@ -200,10 +215,10 @@ namespace StaleParentCellFix::Unlink
         inline constexpr std::uintptr_t FixedMapCapacity = 0xB4;
         inline constexpr std::uintptr_t FixedMapEntries = 0xD0;
 
-        void Scan(RE::TESWorldSpace* world, std::uintptr_t cell)
+        void Scan(RE::TESWorldSpace* world, std::uintptr_t cell, std::uint32_t cellFormID)
         {
             for (auto& reference : world->mobilePersistentRefs) {
-                Unlink(reference.get(), cell, "mobile");
+                Unlink(reference.get(), cell, cellFormID, "mobile");
             }
             const auto address = reinterpret_cast<std::uintptr_t>(world);
             const auto capacity = *reinterpret_cast<std::uint32_t*>(address + FixedMapCapacity);
@@ -217,7 +232,7 @@ namespace StaleParentCellFix::Unlink
                     continue;
                 }
                 for (std::uint32_t i = 0; i < entry.references->size; ++i) {
-                    Unlink(entry.references->data[i], cell, "fixed");
+                    Unlink(entry.references->data[i], cell, cellFormID, "fixed");
                 }
             }
         }
@@ -238,17 +253,28 @@ namespace StaleParentCellFix::Unlink
             // destroyed, so without one every worldspace is checked.
             const auto worldSpace = Memory::Read<std::uintptr_t>(address + Forms::Offset::CellWorldSpace).value_or(0);
             if (Forms::IsLiveWorldSpace(worldSpace)) {
-                Scan(reinterpret_cast<RE::TESWorldSpace*>(worldSpace), address);
+                Scan(reinterpret_cast<RE::TESWorldSpace*>(worldSpace), address, cellFormID);
             } else if (auto* data = RE::TESDataHandler::GetSingleton()) {
                 for (auto* world : data->GetFormArray<RE::TESWorldSpace>()) {
                     if (world) {
-                        Scan(world, address);
+                        Scan(world, address, cellFormID);
                     }
                 }
             }
             lock->Unlock();
             const auto elapsed = Microseconds() - start;
             Log(cellFormID);
+            if (!leftStale.empty()) {
+                std::scoped_lock guard{ staleMutex };
+                if (stale.size() + leftStale.size() > StaleLimit) {
+                    spdlog::info("stale reads: forgetting {} remembered stale references", stale.size());
+                    stale.clear();
+                }
+                for (const auto& [reference, entry] : leftStale) {
+                    stale.insert_or_assign(reference, entry);
+                }
+                leftStale.clear();
+            }
             auto previous = slowest.load();
             while (elapsed > previous && !slowest.compare_exchange_weak(previous, elapsed)) {
             }
@@ -268,11 +294,33 @@ namespace StaleParentCellFix::Unlink
         }
     }
 
-    void Install()
+    void Install(bool clear)
     {
+        clearing = clear;
         lock.emplace();
         REL::Relocation<std::uintptr_t> cell{ RE::VTABLE_TESObjectCELL[0] };
         cellDelete = reinterpret_cast<Deleter>(cell.write_vfunc(0, &CellDelete));
-        spdlog::info("unlinking persistent references from exterior cells before they are destroyed");
+        spdlog::info(clear ? "unlinking deleted persistent references from exterior cells before they are destroyed; "
+                             "remembering the rest for stale-read reports"
+                           : "fix off: only remembering persistent references left pointing at destroyed cells, for "
+                             "stale-read reports");
+    }
+
+    std::optional<Stale> FindStale(std::uintptr_t reference, std::uintptr_t parentCell, bool forget)
+    {
+        std::scoped_lock guard{ staleMutex };
+        const auto it = stale.find(reference);
+        if (it == stale.end()) {
+            return std::nullopt;
+        }
+        if (it->second.cell != parentCell) {
+            stale.erase(it);
+            return std::nullopt;
+        }
+        const auto found = it->second;
+        if (forget) {
+            stale.erase(it);
+        }
+        return found;
     }
 }

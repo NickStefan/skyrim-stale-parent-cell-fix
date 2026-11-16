@@ -122,6 +122,10 @@ narrow. To see the crash again for comparison, set the fix to 0 (and `[Guards] b
 All times are local. Logs are in
 `Documents/My Games/Skyrim Special Edition/SKSE/` (`StaleParentCellFix.log`, `crash-*.log`).
 
+- **2026-11-16 00:03, fix off, guards on, stress on.** One Dawnstar - Tundra Homestead cycle: no
+  crash, no `PREVENTED`, no access violation. Expected for a use-after-free that only crashes when
+  the freed memory has been reused by the time it is read; it does not show the leftovers are
+  safe. Led to the stale-read reports, which log every such read regardless of luck.
 - **2026-11-15 23:53, holder logging on, stress on.** Dawnstar - Tundra Homestead. 23:56:37: the
   three Dawnstar leftovers cleared again. The corpse `FF002527`: dead, not forced persistent, no
   quest aliases. The books `FF0025A6` / `FF0025A7`: quest `21025759` `DialogueJasparGaerston`

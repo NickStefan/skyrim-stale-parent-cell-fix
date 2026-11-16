@@ -110,6 +110,14 @@ Diagnostics:
   `TESForm::SetDelete`, 14636), and the last 8192 deletions are kept with call stacks. Under each
   reference the fix clears, the log says who deleted it, when, and what cell it was in then; or
   that no deletion was recorded this session (for example, it was already deleted in the save).
+- Stale reads: the destroy hook remembers every persistent reference it leaves pointing at a
+  destroyed cell (all of them with the fix off). When `AddReference` or `BGSLocation::IsChild` is
+  called on one that still holds that exact pointer, the log gets a "stale read" line saying what
+  the memory holds now: the same cell reloaded at the same address, another cell (memory reused),
+  freed memory with the old data still readable, or overwritten memory. That shows how often the
+  game reads these pointers without waiting for a crash. In `AddReference`, a stale pointer into
+  memory now holding another cell is cut, since removing the reference from that cell would
+  corrupt its list.
 - Holders: under each cleared reference the fix also logs whether it is forced persistent (a quest
   alias or script holding it), an actor's life state, and the quest aliases filled with it (quest
   formID, editor ID, alias name, whether the quest is running).
