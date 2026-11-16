@@ -131,6 +131,12 @@ All times are local. Logs are in
 `Documents/My Games/Skyrim Special Edition/SKSE/` (`StaleParentCellFix.log`, `crash-*.log`).
 Every session from 2026-11-16 11:18 on ran with stress mode off, around Tundra Homestead.
 
+- **2026-11-16 13:24, fix-only DLL, swap files rewritten by `fix_alphatest.py`.** The usual loop:
+  nothing logged after startup, no HUD message, no crash. The rewritten swaps still hide their
+  objects in game.
+- **2026-11-16 13:00, fix-only DLL, original `_NoMoreMist_SWAP.ini`.** The mist was fixed once
+  (13:05:15, cell `000095F7`); no crash.
+
 - **2026-11-16 12:37, without `_NoMoreMist_SWAP.ini`.** About seven minutes on the same route: no
   formID-0 leftover seen, nothing for the source fix or the backstop to do, no guard, no access
   violation, no HUD message. The earlier sessions had their first leftover within minutes.

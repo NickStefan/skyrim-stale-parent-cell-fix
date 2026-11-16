@@ -1,0 +1,10 @@
+Tori save 303
+Starts in dawnstar
+Use cheat menu to set speed to 400
+Run out south of dawnstar (may trigger the HUD message about preventing crash)
+Then fast travel to whiterun meadery
+Then run from there past homestead past north wall of whiterun towards the pale and cicero
+Then run back along the same path, past the whiterun meadery, then up the hill towards riverwood
+Should then get a HUD message about the crash being prevented
+- When not running the AlphaTest swaps - no HUD, no crash needing to be prevented
+- When running the AlphaTest swaps, but with the DLL fix, crash is prevented and HUD message

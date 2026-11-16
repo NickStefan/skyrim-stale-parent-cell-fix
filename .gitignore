@@ -4,6 +4,8 @@
 /install/
 /dist-staging/
 /release/
+/BaseObjectSwapperFixer/SWAPS_IN/*
+/BaseObjectSwapperFixer/SWAPS_OUT/*
 CMakeUserPresets.json
 CMakeCache.txt
 CMakeFiles/

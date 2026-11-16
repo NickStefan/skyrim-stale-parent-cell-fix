@@ -16,12 +16,11 @@ Rough order of work. Things move up or down as test reports show what matters.
 - Reduced to the fix alone. The investigation build (crash guards, destroy-time backstop,
   lifetime and call-stack diagnostics, stress mode) is commit `a09749b`.
 
+- Fix-only build play-tested with the original swap file (mist fixed, no crash) and with the swap
+  files rewritten by `BaseObjectSwapperFixer/fix_alphatest.py` (nothing to fix).
+
 ## Next
 
-- Play-test the fix-only build with `_NoMoreMist_SWAP.ini` installed: expect "fixed released
-  reference" lines and no crash.
-- A small tool that rewrites BOS swap files to avoid the swaps that create leftovers, then a
-  session with the rewritten files and the DLL: expect an empty log.
 - Report to the No More Mist / Base Object Swapper authors.
 
 ## Before release: game versions

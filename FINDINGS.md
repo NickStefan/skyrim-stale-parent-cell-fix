@@ -123,7 +123,9 @@ lists are guarded by the lock with ID 401119.
   revived, then caught at step 3 and unlinked; the destroy-time backstop found nothing to clear,
   and no guard fired (12:32).
 - **The swap as the source of step 1**: the same route with `_NoMoreMist_SWAP.ini` removed gave no
-  formID-0 leftovers (12:37-12:44).
+  formID-0 leftovers (12:37-12:44). With the swaps rewritten as disables (`[Transforms]`
+  `posR(0.0,0.0,-30000.0),flags(0x00000800)`, by `BaseObjectSwapperFixer/fix_alphatest.py`), the
+  objects stay hidden and the fix had nothing to do either (13:24).
 
 ## Related reports
 

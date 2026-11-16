@@ -43,6 +43,15 @@ nothing.
 The investigation build (diagnostics, crash guards and a destroy-time backstop) is in git history
 up to commit `a09749b`; see [FINDINGS.md](FINDINGS.md).
 
+## Avoiding the leftovers: `BaseObjectSwapperFixer`
+
+`BaseObjectSwapperFixer/fix_alphatest.py` rewrites Base Object Swapper `<form>|AlphaTest` swaps
+as BOS's usual disable: a `[Transforms]` entry (with the same conditions) that keeps the base,
+sets the initially-disabled flag and moves the reference 30000 units down. Put the `_SWAP.ini`
+files in `BaseObjectSwapperFixer/SWAPS_IN/`, run `python3 BaseObjectSwapperFixer/fix_alphatest.py`,
+and install the files from `SWAPS_OUT/` over the originals. With the rewritten No More Mist file
+the leftovers no longer appear; the DLL still covers any other source.
+
 ## Build (Linux / SteamOS)
 
 ```sh
