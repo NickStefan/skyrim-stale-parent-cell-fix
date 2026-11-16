@@ -2,38 +2,34 @@
 
 ## What has to happen
 
-1. **Load an area.** An exterior cell is loaded with a reference in it that the worldspace also
-   tracks as persistent: in `TESWorldSpace::mobilePersistentRefs` or, per cell, in
-   `fixedPersistentRefMap`. Both hold counted pointers, so the worldspace keeps those references
-   alive on its own.
-2. **Leave until the cell is destroyed, not just unloaded.** Unloaded exterior cells stay in the
+The full mechanism is in [FINDINGS.md](FINDINGS.md). In play terms:
+
+1. **Visit an area with a leftover.** The game releases some references (formID 0, deleted) but
+   leaves them in the worldspace's mobile persistent list. On the affected load order these are
+   the mist objects No More Mist swaps to `AlphaTest`; they are released as you move away from
+   them.
+2. **Come back, so the cell loads again.** The loader puts the leftover back into the cell.
+3. **Leave until the cell is destroyed, not just unloaded.** Unloaded exterior cells stay in the
    cell buffer (`uExterior Cell Buffer`, 36 by default) until enough other cells push them out, or
-   until fast travel unloads everything. When one is destroyed, the destructor re-points the
-   `parentCell` of the live persistent references that were in it, but not of leftovers that are
-   still in the worldspace's persistent lists: those keep pointing at the freed memory.
-3. **Something touches a bad one.** Either:
-   - **Come back to the same cell.** The loader (ID 20532) puts the cell's persistent references
-     back into it. With a non-null `parentCell` it first reads a flag from that cell and removes the
-     reference from it: crash in `TESObjectCELL::AddReference` / `GetEncounterZone` on a
-     cell-loading worker thread.
+   until fast travel unloads everything. When the cell is unloaded and destroyed, the leftover is
+   taken out of it but keeps pointing at it.
+4. **Something touches the leftover.** Either:
+   - **Come back to the same cell.** The loader re-adds the leftover and first removes it from the
+     freed cell: crash in `TESObjectCELL::AddReference` / `GetEncounterZone` on a cell-loading
+     worker thread.
    - **Cross a location boundary.** A Change Location story event starts radiant quests whose alias
      conditions test nearby references; reading the freed cell's worldspace or location crashes in
      `BGSLocation::IsChild` / `TESWorldSpace::GetLocationFromCoordinates` on a job thread.
 
-Every crash so far was on a **leftover**: a reference with formID 0, or a runtime-created one
-(`FF......`), with the deleted flag (`0x20`). A script or mod deleted the object, but it was still
-in the worldspace's persistent list. The cell's destructor sets `parentCell` to null only on the
-references in the cell's own reference list (disassembly, 2026-11-16), which included the live
-ones and the `FF......` deleted leftovers seen at Dawnstar (00:34 session). The formID-0 mist was
-not in it, and stayed stale. The fix now clears exactly the references outside that list.
+Step 4 only crashes if the freed memory has been reused by then, so most stale pointers go
+unnoticed; the plugin's log shows them regardless.
 
 ## Why it is hard to hit
 
-Step 2 needs real distance (enough new cells to push the old one out of the buffer) or a fast
-travel, and step 3 needs a leftover in that cell to be used afterwards. Moving fast covers distance
-quickly, but speed itself is not needed: returning to the cell after it was destroyed is. A
-character with many radiant quests ready to start (bounties picked up, Missives, quest mods like
-MoreToSay) makes the quest variant much more likely than a fresh character does.
+Steps 2 and 3 need a return trip and real distance (or a fast travel) in between. Moving fast
+covers distance quickly, but speed itself is not needed. A character with many radiant quests
+ready to start (bounties picked up, Missives, quest mods like MoreToSay) makes the quest variant of
+step 4 much more likely than a fresh character does.
 
 ## Known trigger areas
 
@@ -45,13 +41,23 @@ MoreToSay) makes the quest variant much more likely than a fresh character does.
 - `_NoMoreMist_SWAP.ini` (No More Mist, Base Object Swapper) swaps its base to `AlphaTest`
   (`00058E92`, STAT). In game the stale object is a formID-0, deleted-flagged (flags `0x2B`)
   reference at that spot, base `00058E92`, in the mobile persistent list.
-- How the swapped reference becomes a formID-0 deleted leftover is not known yet.
+- It is released by the game a few seconds after you leave, revived when the cell loads again,
+  and goes stale when the cell is destroyed, about 18 s after the revival in every capture.
 
-1. Go to Tundra Homestead so cell (9, -2) loads.
-2. Leave far enough for the cell to be destroyed; stress mode does it at the next location boundary.
-3. Come back. The loader re-adds the leftover.
+1. Go to Tundra Homestead so cell (9, -2) loads, then leave.
+2. Come back, then leave far enough (or fast travel) for the cell to be destroyed.
+3. Repeat. On the affected load order this triggers within about five minutes.
 
-### Dawnstar
+Other mist references swapped the same way go through the same steps elsewhere (formIDs
+`000E21F0`, `000FCA50`, `000C9C4D`-`4F`, `000FC8A4`-`A6`, `0004C1E6`-`E7`, `000EA462`, `000E99xx`,
+`02014E7C`-`80` in the 2026-11-16 logs).
+
+### Dawnstar (harmless leftovers)
+
+These turned out not to be dangerous: they keep their formIDs and are persistent, so they stay in
+the cell's reference list and the destructor unlinks them (2026-11-16 00:34 session). Kept here
+because they were investigated at length and show other ways deleted references stay in the
+persistent lists.
 
 | cell | grid | location | seen |
 | --- | --- | --- | --- |
@@ -86,14 +92,8 @@ earlier and released it.
 `DialogueJasparGaerston`, aliases "Book2" and "Book1". They are deleted and initially disabled,
 but the filled aliases keep them in the persistent list.
 
-So the sources differ (a base swap, a spawned corpse, quest-created items), but the engine does
-the same thing with all of them: it keeps a deleted but persistent object in the worldspace's
-lists, and leaves its `parentCell` dangling when the cell is destroyed. Every reference that
-actually crashed or tripped a guard had formID 0; these `FF......` leftovers have not crashed yet.
-
-1. Spend some time in Dawnstar.
-2. Travel away (fast travel destroys the area's cells) or cross location boundaries with stress mode.
-3. Come back, or keep crossing boundaries nearby.
+Every reference that actually crashed or tripped a guard had formID 0; these `FF......`
+leftovers never did.
 
 ## Steps
 
@@ -110,19 +110,51 @@ actually crashed or tripped a guard had formID 0; these `FF......` leftovers hav
    - Nightcaller Temple - Dawnstar.
 4. Send back `StaleParentCellFix.log` and any new crash log from the SKSE log folder.
 
-## Checking the fix
+## Checking the fixes
 
-With `[Fix] bUnlinkPersistentReferences=1` (the default), the same steps should produce
-`cell ... destroyed: cleared parentCell of persistent reference ...: not in the cell's own
-reference list` lines instead of `PREVENTED` entries or crashes. Each line gives the reference's
-formID, base, flags and list. References in the cell's list are left to the destructor, so fast
-travel alone usually logs nothing. A `PREVENTED` entry or a "still points at it afterwards"
-warning would mean something besides the destructor gap is at work. To see the crash again for comparison, set the fix to 0 (and `[Guards] bEnabled=0`).
+With the defaults, the steps above should produce, for each leftover that would have gone stale:
+
+- `release of an already released reference 0x... (formID 0, base 00058E92, flags 0000002B) still
+  pointing at cell 000095F7 (...): cleared its parentCell, which the game skips`: the source fix
+  (`[Fix] bCompleteRelease`).
+- No `cell ... destroyed: cleared parentCell of persistent reference` lines: those are the
+  destroy-time backstop (`bUnlinkPersistentReferences`) catching what the source fix missed.
+- No `PREVENTED` entries (guards) and no access violations.
+
+"formID 0 persistent reference ... first seen" lines are normal: they record leftovers being
+created (step 1), which the plugin does not prevent. A `left the reference list of cell ...
+without RemoveReference` warning (the watch) is expected too if a check lands between the game
+taking the reference out of the list and the source fix running; it describes step 3, not a
+failure.
+
+To compare: with `bCompleteRelease=0` the backstop clears the same references when their cell is
+destroyed; with both fixes and `[Guards] bEnabled=0` the crash can happen again.
 
 ## Sessions
 
 All times are local. Logs are in
 `Documents/My Games/Skyrim Special Edition/SKSE/` (`StaleParentCellFix.log`, `crash-*.log`).
+Every session from 2026-11-16 11:18 on ran with stress mode off, around Tundra Homestead.
+
+- **2026-11-16 12:24, source fix.** The mist was released at 12:31:06; at 12:32:10, as cell
+  `000095F7` unloaded, the source fix cleared its `parentCell`. The backstop found nothing to clear;
+  no watch warning, no `PREVENTED`, no access violation.
+- **2026-11-16 12:12, set watch.** The mist was re-added at 12:18:00; at 12:18:18 the watch found it
+  gone from the cell's list: in the 3 ms before the cell's destruction 51 of its 58 entries left
+  (free count 454 to 505 of 512, same slot array, same cell object), with no `RemoveReference`. The
+  destroy stack (13721 -> 20461) led to 19113 -> 19235 and the early return in 36459: the root
+  cause. The backstop cleared the mist.
+- **2026-11-16 11:55, `RemoveReference` hook.** Released 11:58:58, re-added 12:00:34, cleared by the
+  backstop at 12:00:52. No `RemoveReference` on it in between.
+- **2026-11-16 11:37, `SetParentCell` hook.** Released 11:42:21; at 11:42:49 the loader (20532 ->
+  19411, worker thread) re-added it to cell `000095F7`, in the cell's list; cleared by the backstop
+  at 11:43:07, no longer in the list.
+- **2026-11-16 11:18, `SetFormID` hook.** About 30 `AlphaTest` references set to formID 0 by the
+  release routine (36459) from the per-grid cleanup (18237), all left in the mobile list with a
+  null `parentCell`; the same formIDs left a new dead copy on each cell reload. The mist was
+  released at 11:24:47 and cleared by the backstop at 11:28:06, pointing at its cell again. Its
+  release record had already been overwritten by then (the history rings turn over in minutes), so
+  records are now kept for each leftover when it is first seen.
 
 - **2026-11-16 00:34, fix off, checked right after each destructor, stress on.** Three bursts,
   about 120 persistent references pointing at destroyed cells: the destructor set every one to
