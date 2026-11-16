@@ -17,4 +17,13 @@ namespace StaleParentCellFix::Unlink
 
     // Whether `reference` is in the cell's own reference set (read without the cell's lock).
     bool InCellSet(std::uintptr_t cell, std::uintptr_t reference);
+
+    struct CellSetState
+    {
+        std::uintptr_t entries;  // the table's slot array; a new one means it was rebuilt
+        std::uint32_t capacity;
+        std::uint32_t free;
+        bool contains;
+    };
+    CellSetState ReadCellSet(std::uintptr_t cell, std::uintptr_t reference);
 }

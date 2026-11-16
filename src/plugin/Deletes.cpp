@@ -24,6 +24,7 @@ namespace StaleParentCellFix::Deletes
             std::uint32_t cellFormID;
             std::uint32_t thread;
             Stack stack;
+            std::uintptr_t cell = 0;  // attached, watched removals: the cell object
             bool inCellSet = false;   // attached: whether it was in the new cell's set right after
             bool parentKept = false;  // detached: whether parentCell still pointed at the cell after
         };
@@ -70,6 +71,9 @@ namespace StaleParentCellFix::Deletes
             record.cellFormID = FormIDAt(address + Forms::Offset::RefParentCell);
             record.thread = GetCurrentThreadId();
             record.stack.Capture();
+            record.cell = 0;
+            record.inCellSet = false;
+            record.parentKept = false;
             return record;
         }
 
@@ -109,6 +113,109 @@ namespace StaleParentCellFix::Deletes
             setFormID(form, id, updateFile);
         }
 
+        // A formID 0 reference just put into a cell's set, checked until it leaves the set or the cell.
+        struct Watch
+        {
+            std::uintptr_t reference;
+            std::uintptr_t cell;
+            std::uint32_t cellFormID;
+            std::uint64_t attachedAt;
+            std::uint64_t lastIn;
+            Unlink::CellSetState lastState;
+        };
+        std::mutex watchLock;
+        std::vector<Watch> watches;
+        std::atomic<bool> watching = false;
+        std::atomic<std::uint64_t> lastCheck = 0;
+        constexpr std::size_t WatchLimit = 64;
+        constexpr std::uint64_t CheckInterval = 20;  // ms
+
+        // Every RemoveReference on a watched cell, so a lost reference shows what else left with it.
+        Ring<Record, 512> watchedRemovals;
+        std::atomic<std::uint64_t> lostCount = 0;
+
+        void StartWatch(std::uintptr_t reference, std::uintptr_t cell)
+        {
+            const auto header = Forms::ReadHeader(cell);
+            const auto now = GetTickCount64();
+            std::scoped_lock guard{ watchLock };
+            std::erase_if(watches, [&](const Watch& watch) { return watch.reference == reference; });
+            if (watches.size() >= WatchLimit) {
+                watches.erase(watches.begin());
+            }
+            watches.push_back({ reference, cell, header ? header->formID : 0, now, now,
+                Unlink::ReadCellSet(cell, reference) });
+            watching = true;
+        }
+
+        bool WatchedCell(std::uintptr_t cell)
+        {
+            std::scoped_lock guard{ watchLock };
+            return std::ranges::any_of(watches, [&](const Watch& watch) { return watch.cell == cell; });
+        }
+
+        void ReportLost(const Watch& watch, const Unlink::CellSetState& now, std::uint64_t time)
+        {
+            std::string removals;
+            watchedRemovals.Scan([&](const Record& record) {
+                if (record.cell == watch.cell && record.time >= watch.lastIn) {
+                    removals += std::format("\n      {:08X} (0x{:X}) {} ms ago on {}", record.formID, record.address,
+                        time - record.time, Report::ThreadName(record.thread));
+                }
+                return true;
+            });
+            Stack stack;
+            stack.Capture();
+            spdlog::warn("formID 0 reference 0x{:X} left the reference list of cell {:08X} (0x{:X}) without "
+                         "RemoveReference: still in it {} ms ago, gone now (put in {} ms ago); parentCell still "
+                         "points at the cell. List then: slots 0x{:X}, capacity {}, free {}; now: slots 0x{:X}, "
+                         "capacity {}, free {} (#{})",
+                watch.reference, watch.cellFormID, watch.cell, time - watch.lastIn, time - watch.attachedAt,
+                watch.lastState.entries, watch.lastState.capacity, watch.lastState.free, now.entries, now.capacity,
+                now.free, ++lostCount);
+            spdlog::info("  RemoveReference calls on that cell since it was last seen in the list:{}",
+                removals.empty() ? std::string{ " none" } : removals);
+            spdlog::info("  noticed on {}; stack:{}", Report::ThreadName(GetCurrentThreadId()),
+                Report::StackTrace(stack.View()));
+            Report::Notice("lost", "StaleParentCellFix: caught a reference dropping out of its cell. Please send "
+                                   "StaleParentCellFix.log.");
+        }
+
+        void CheckWatches(bool force = false)
+        {
+            if (!watching) {
+                return;
+            }
+            const auto time = GetTickCount64();
+            auto previous = lastCheck.load();
+            if (!force && (time - previous < CheckInterval || !lastCheck.compare_exchange_strong(previous, time))) {
+                return;
+            }
+            std::vector<std::pair<Watch, Unlink::CellSetState>> lost;
+            {
+                std::scoped_lock guard{ watchLock };
+                std::erase_if(watches, [&](Watch& watch) {
+                    const auto parent =
+                        Memory::Read<std::uintptr_t>(watch.reference + Forms::Offset::RefParentCell).value_or(0);
+                    if (parent != watch.cell) {
+                        return true;  // moved or unlinked: no longer the state that goes stale
+                    }
+                    const auto state = Unlink::ReadCellSet(watch.cell, watch.reference);
+                    if (state.contains) {
+                        watch.lastIn = time;
+                        watch.lastState = state;
+                        return false;
+                    }
+                    lost.emplace_back(watch, state);
+                    return true;
+                });
+                watching = !watches.empty();
+            }
+            for (const auto& [watch, state] : lost) {
+                ReportLost(watch, state, time);
+            }
+        }
+
         // ID 19818: TESObjectREFR::SetParentCell (vfunc 0x98; actors override it with 37304).
         using SetParentCellFn = void (*)(RE::TESObjectREFR*, RE::TESObjectCELL*);
         SetParentCellFn setParentCell = nullptr;
@@ -116,12 +223,18 @@ namespace StaleParentCellFix::Deletes
         void SetParentCell(RE::TESObjectREFR* reference, RE::TESObjectCELL* cell)
         {
             setParentCell(reference, cell);
+            CheckWatches();
             if (!reference || !cell || reference->formID != 0) {
                 return;
             }
             const auto address = reinterpret_cast<std::uintptr_t>(reference);
+            const auto cellAddress = reinterpret_cast<std::uintptr_t>(cell);
             auto& record = Remember(attached, address);
-            record.inCellSet = Unlink::InCellSet(reinterpret_cast<std::uintptr_t>(cell), address);
+            record.cell = cellAddress;
+            record.inCellSet = Unlink::InCellSet(cellAddress, address);
+            if (record.inCellSet) {
+                StartWatch(address, cellAddress);
+            }
         }
 
         // ID 19032: TESObjectCELL::RemoveReference. Its entry is `if (!reference) return;`, which
@@ -136,6 +249,11 @@ namespace StaleParentCellFix::Deletes
             }
             const bool zero = reference->formID == 0;
             removeReference(cell, reference);
+            if (watching && cell && WatchedCell(reinterpret_cast<std::uintptr_t>(cell))) {
+                Remember(watchedRemovals, reinterpret_cast<std::uintptr_t>(reference)).cell =
+                    reinterpret_cast<std::uintptr_t>(cell);
+            }
+            CheckWatches();
             if (!zero || !cell) {
                 return;
             }
@@ -244,8 +362,8 @@ namespace StaleParentCellFix::Deletes
         const bool zero = header && header->formID == 0;
         if (attachHooked) {
             const bool any = History(out, attached, reference, [](const Record& record) {
-                return record.inCellSet ? "given parentCell (and in that cell's reference list)"
-                                        : "given parentCell but NOT in that cell's reference list";
+                return std::format("given parentCell 0x{:X} {}", record.cell,
+                    record.inCellSet ? "(and in that cell's reference list)" : "but NOT in that cell's reference list");
             });
             if (!any && zero) {
                 out += "\n    no SetParentCell recorded while it had formID 0";
@@ -261,6 +379,11 @@ namespace StaleParentCellFix::Deletes
             }
         }
         return out;
+    }
+
+    void Check()
+    {
+        CheckWatches(true);
     }
 
     void Pin(std::uintptr_t reference)

@@ -238,6 +238,7 @@ namespace StaleParentCellFix::Unlink
         // The cell's own reference set (a BSTSet at +0x90): the only list its destructor walks
         // (19410 -> 19458 -> 19468, which calls SetParentCell(nullptr) on each reference).
         inline constexpr std::uintptr_t CellSetCapacity = 0x94;
+        inline constexpr std::uintptr_t CellSetFree = 0x98;
         inline constexpr std::uintptr_t CellSetEntries = 0xB0;
 
         struct CellSetEntry
@@ -343,13 +344,14 @@ namespace StaleParentCellFix::Unlink
             return out;
         }
 
-        void Log(std::uint32_t cellFormID)
+        void Log(std::uint32_t cellFormID, std::uintptr_t cell)
         {
             for (const auto& entry : cleared) {
-                spdlog::warn("cell {:08X} destroyed: cleared parentCell of persistent reference 0x{:X} (formID "
-                             "{:08X}, base {:08X}, flags {:08X}, {} list): not in the cell's own reference list, so "
-                             "the destructor would have left it pointing at the freed cell (#{})",
-                    cellFormID, entry.address, entry.formID, entry.baseFormID, entry.flags, entry.list, ++unlinked);
+                spdlog::warn("cell {:08X} (0x{:X}) destroyed: cleared parentCell of persistent reference 0x{:X} "
+                             "(formID {:08X}, base {:08X}, flags {:08X}, {} list): not in the cell's own reference "
+                             "list, so the destructor would have left it pointing at the freed cell (#{})",
+                    cellFormID, cell, entry.address, entry.formID, entry.baseFormID, entry.flags, entry.list,
+                    ++unlinked);
                 spdlog::info("  0x{:X} {}", entry.address, Holders(entry.reference.get()));
                 if (const auto history = Deletes::Describe(entry.address); !history.empty()) {
                     spdlog::info("  0x{:X} {}", entry.address, history);
@@ -406,6 +408,7 @@ namespace StaleParentCellFix::Unlink
 
         void BeforeDestroy(RE::TESObjectCELL* cell)
         {
+            Deletes::Check();
             const auto address = reinterpret_cast<std::uintptr_t>(cell);
             const auto header = Forms::ReadHeader(address);
             const auto cellFormID = header ? header->formID : 0;
@@ -434,7 +437,7 @@ namespace StaleParentCellFix::Unlink
             Decide(address);
             lock->Unlock();
             const auto elapsed = Microseconds() - start;
-            Log(cellFormID);
+            Log(cellFormID, address);
             LogSightings();
 
             auto previous = slowest.load();
@@ -491,7 +494,28 @@ namespace StaleParentCellFix::Unlink
 
     bool InCellSet(std::uintptr_t cell, std::uintptr_t reference)
     {
-        return CellSet(cell).contains(reference);
+        const auto capacity = Memory::Read<std::uint32_t>(cell + CellSetCapacity).value_or(0);
+        const auto entries = Memory::Read<std::uintptr_t>(cell + CellSetEntries).value_or(0);
+        if (!entries || capacity > (1u << 22)) {
+            return false;
+        }
+        for (std::uint32_t slot = 0; slot < capacity; ++slot) {
+            const auto entry = Memory::Read<CellSetEntry>(entries + slot * sizeof(CellSetEntry));
+            if (!entry) {
+                return false;
+            }
+            if (entry->next && entry->reference == reference) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    CellSetState ReadCellSet(std::uintptr_t cell, std::uintptr_t reference)
+    {
+        return { Memory::Read<std::uintptr_t>(cell + CellSetEntries).value_or(0),
+            Memory::Read<std::uint32_t>(cell + CellSetCapacity).value_or(0),
+            Memory::Read<std::uint32_t>(cell + CellSetFree).value_or(0), InCellSet(cell, reference) };
     }
 
     void Install(bool clear)

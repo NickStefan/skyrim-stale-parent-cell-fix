@@ -15,6 +15,10 @@ namespace StaleParentCellFix::Deletes
     // ID 19818), and whether it was in that cell's reference list right after.
     std::string Describe(std::uintptr_t reference);
 
+    // Checks now whether a formID 0 reference put into a cell's set has dropped out of it without
+    // RemoveReference (also checked every 20 ms or so from the hooks), logging the first time.
+    void Check();
+
     // Keeps this reference's current deletion and formID records past the rings' turnover.
     void Pin(std::uintptr_t reference);
 }

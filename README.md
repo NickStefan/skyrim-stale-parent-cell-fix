@@ -73,7 +73,14 @@ Static findings on the mechanism:
   leftover to cell `000095F7`, properly, into its reference list; 18 s later it was no longer in
   that list but still pointed at the cell, and the fix cleared it at 11:43:07. So the loader
   revives leftovers from the mobile list, and something then removes them from the cell's list
-  without clearing `parentCell`. The `RemoveReference` hook (19032) records that step.
+  without clearing `parentCell`. Third capture (11:59-12:00): same sequence, again about 18 s
+  between the loader re-adding it and the cell's destruction, and no `RemoveReference` (19032)
+  call on it in between. 19032 is the only caller of the set's erase (19373), and the destructor
+  (18877 -> 19410) is the only code that releases a whole set, so the entry leaves some other
+  way. Each formID 0 reference put into a set is now watched (checked every ~20 ms from the hooks
+  and before every cell destruction); the first check that finds it gone logs the set's slot
+  array, capacity and free count before and after, every `RemoveReference` on that cell in the
+  window, and the cell object's address.
 
 ## What the plugin does
 
