@@ -1,5 +1,7 @@
 #include "plugin/Report.h"
 
+#include <set>
+
 #include "plugin/Events.h"
 #include "plugin/Memory.h"
 
@@ -82,6 +84,20 @@ namespace StaleParentCellFix::Report
         if (count == static_cast<std::uint64_t>(detailed)) {
             spdlog::warn("{}: further incidents here are only counted (every 100th is logged)", site);
         }
+        spdlog::default_logger()->flush();
+    }
+
+    void Notice(std::string_view kind, std::string text)
+    {
+        static std::mutex noticeLock;
+        static std::set<std::string, std::less<>> noticed;
+        {
+            std::scoped_lock guard{ noticeLock };
+            if (!notify || !noticed.emplace(kind).second) {
+                return;
+            }
+        }
+        Notify(std::move(text));
         spdlog::default_logger()->flush();
     }
 }

@@ -128,8 +128,9 @@ Diagnostics:
   call stacks (32 frames, like the lifetime history) and added to every report. The quests these
   events start run later on a worker thread, so whatever caused the event (the engine, a mod, fast
   movement) is otherwise missing from the crash stack.
-- A HUD notification the first time each guard fires in a session, so you know the log has
-  something worth sending (and that the session is better reloaded than saved).
+- A HUD notification the first time in a session that each guard fires (the session is then better
+  reloaded than saved), a formID-0 persistent reference is seen, or the fix clears one, so you know
+  the log has something worth sending.
 - A vectored handler logs the first 8 access violations in SkyrimSE.exe code (never handles them):
   registers and stack slots that point into destroyed objects, and an unwound call stack. That
   covers the crash still happening somewhere unguarded.

@@ -6,6 +6,7 @@
 #include "plugin/Forms.h"
 #include "plugin/Frees.h"
 #include "plugin/Memory.h"
+#include "plugin/Report.h"
 
 namespace StaleParentCellFix::Unlink
 {
@@ -152,6 +153,10 @@ namespace StaleParentCellFix::Unlink
                     spdlog::info("  0x{:X} {}", s.address, history);
                 }
             }
+            if (!sightings.empty()) {
+                Report::Notice("sighting", "StaleParentCellFix: caught a formID 0 reference, the kind behind the "
+                                           "crash. Please send StaleParentCellFix.log.");
+            }
             sightings.clear();
         }
 
@@ -253,6 +258,10 @@ namespace StaleParentCellFix::Unlink
                 spdlog::info("  0x{:X} {}", entry.address, Holders(entry.reference.get()));
                 if (const auto history = Deletes::Describe(entry.address); !history.empty()) {
                     spdlog::info("  0x{:X} {}", entry.address, history);
+                }
+                if (entry.formID == 0) {
+                    Report::Notice("cleared", "StaleParentCellFix: prevented a crash on a formID 0 reference. "
+                                              "Please send StaleParentCellFix.log.");
                 }
             }
             cleared.clear();

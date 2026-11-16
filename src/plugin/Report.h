@@ -22,4 +22,7 @@ namespace StaleParentCellFix::Report
     void Incident(std::string_view site, std::string_view reason, std::initializer_list<Object> objects);
 
     std::string StackTrace(std::span<void* const> frames);
+
+    // A HUD message the first time each kind of event happens in a session, if notifications are on.
+    void Notice(std::string_view kind, std::string text);
 }
