@@ -54,6 +54,30 @@ leftovers included. Only formID-0 references have been proven to stay stale (the
 3. **A look at the destructor's code** (IDs 18877, 19410, 20508) to see which list it walks. That
    needs no play session. If it confirms the guess, item 2 just verifies it in play.
 
+   **Done 2026-11-16: the guess is confirmed.** The destructor only walks the cell's own
+   reference set, never the worldspace's persistent lists:
+   - 18877 (destructor) calls 19410 and, for exterior cells, 20508.
+   - 20508 only removes the cell from the worldspace's cell grid map; it does not touch
+     references.
+   - 19410 takes the cell's lock (`cell+0x120`) and calls 19458, which walks the cell's
+     reference set (a `BSTSet` at `cell+0x90`: capacity `+0x94`, free count `+0x98`, sentinel
+     `+0xA0`, 0x10-byte entries `{reference, next}` at `+0xB0`) and calls 19468 on each one.
+     Then 19410 frees the set and the array at `cell+0xC0` (count `+0xD0`).
+   - 19468 calls `reference->SetParentCell(nullptr)` (vfunc 0x98). The one exception: a
+     persistent reference (19593, flag `0x400`) in a persistent exterior cell (18903, cell flag
+     `0x400`) gets its handle released instead, and keeps its `parentCell`. That only applies to
+     the worldspace's persistent cell, which is not destroyed in normal play.
+   - So a reference that points at the cell but is no longer in the cell's own set keeps its
+     `parentCell`. That is exactly what the destructor misses. It fits every observation: the
+     `FF...` leftovers were still in the set and got nulled; the mist was not, and stayed stale.
+
+   New open question: what removes a reference from the cell's set without clearing its
+   `parentCell`, and zeroes its formID. Item 1 answers it.
+
+   This also gives the fix an exact scope: before the destructor, clear `parentCell` on every
+   persistent-list reference that points at the cell **and is not in the cell's reference set**.
+   Those are precisely the ones the destructor will skip, whatever their formID or flags.
+
 With all three, one capture should say who zeroed the formID, from what call path, and why the
 destructor skipped it: enough to fix it at the source, or to state precisely what the real fix is.
 
