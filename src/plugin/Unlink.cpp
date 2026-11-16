@@ -98,6 +98,8 @@ namespace StaleParentCellFix::Unlink
         thread_local std::vector<std::pair<std::uintptr_t, Stale>> leftStale;
         std::mutex staleMutex;
         std::unordered_map<std::uintptr_t, Stale> stale;
+        std::uint64_t staleRepointed = 0;  // under staleMutex
+        std::atomic<std::uint64_t> staleRead{ 0 };
 
         void Unlink(RE::TESObjectREFR* reference, std::uintptr_t cell, std::uint32_t cellFormID, const char* list)
         {
@@ -264,14 +266,31 @@ namespace StaleParentCellFix::Unlink
             lock->Unlock();
             const auto elapsed = Microseconds() - start;
             Log(cellFormID);
-            if (!leftStale.empty()) {
+            {
                 std::scoped_lock guard{ staleMutex };
+                // Drop the ones whose pointer was replaced through a path the guards do not watch.
+                std::uint64_t repointed = 0;
+                for (auto it = stale.begin(); it != stale.end();) {
+                    const auto parent = Memory::Read<std::uintptr_t>(it->first + Forms::Offset::RefParentCell);
+                    if (!parent || *parent != it->second.cell) {
+                        it = stale.erase(it);
+                        ++repointed;
+                    } else {
+                        ++it;
+                    }
+                }
+                staleRepointed += repointed;
                 if (stale.size() + leftStale.size() > StaleLimit) {
                     spdlog::info("stale reads: forgetting {} remembered stale references", stale.size());
                     stale.clear();
                 }
                 for (const auto& [reference, entry] : leftStale) {
                     stale.insert_or_assign(reference, entry);
+                }
+                if (!leftStale.empty() || repointed) {
+                    spdlog::info("cell {:08X} destroyed: {} persistent reference(s) left pointing at it; stale "
+                                 "pointers remembered {}, re-pointed without a watched read {} (+{}), read {}",
+                        cellFormID, leftStale.size(), stale.size(), staleRepointed, repointed, staleRead.load());
                 }
                 leftStale.clear();
             }
@@ -318,6 +337,7 @@ namespace StaleParentCellFix::Unlink
             return std::nullopt;
         }
         const auto found = it->second;
+        ++staleRead;
         if (forget) {
             stale.erase(it);
         }
