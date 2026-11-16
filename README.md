@@ -78,7 +78,9 @@ parentCell of persistent reference ..." with its formID, base, flags and which l
 Why only formID 0 or deleted ones: just before destruction many live persistent references still
 point at the cell (a build that cleared them all cleared about 50 on one fast travel), but the
 destructor itself re-points those: checked a millisecond later, at the next destruction in the
-same burst (2026-11-16 00:27), every one of them pointed elsewhere. The leftovers are the ones it misses. Clearing live ones early is
+same burst (2026-11-16 00:27), every one of them pointed elsewhere, and checked right after it
+returns (00:46), all were null, `FF......` deleted leftovers included. Only formID-0 references
+have been proven to stay stale; the fix also clears deleted ones, redundantly but harmlessly. Clearing live ones early is
 unnecessary, and what reads a live reference's cell in between (quest markers, Papyrus
 `GetParentCell`, saving) is unknown. Every crash so far was on a leftover
 with formID 0, the guarded ones also with the deleted flag (the `AlphaTest` swap of the Tundra

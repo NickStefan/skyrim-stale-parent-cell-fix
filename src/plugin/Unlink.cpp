@@ -1,7 +1,10 @@
 #include "plugin/Unlink.h"
 
+#include <unordered_set>
+
 #include "plugin/Deletes.h"
 #include "plugin/Forms.h"
+#include "plugin/Frees.h"
 #include "plugin/Memory.h"
 
 namespace StaleParentCellFix::Unlink
@@ -92,6 +95,66 @@ namespace StaleParentCellFix::Unlink
 
         bool clearing = true;
 
+        // formID 0 references in the persistent lists, reported the first time a scan sees them:
+        // every proven stale reference so far had formID 0.
+        struct Sighting
+        {
+            std::uintptr_t address;
+            std::uint32_t baseFormID;
+            std::uint32_t flags;
+            std::array<float, 3> position;
+            std::uintptr_t parent;
+            const char* list;
+        };
+        thread_local std::vector<Sighting> sightings;
+        std::unordered_set<std::uintptr_t> sighted;  // only touched while holding the game's lock
+
+        std::uint32_t BaseFormID(std::uintptr_t reference)
+        {
+            if (const auto base = Memory::Read<std::uintptr_t>(reference + Forms::Offset::RefBaseObject)) {
+                if (const auto header = Forms::ReadHeader(*base)) {
+                    return header->formID;
+                }
+            }
+            return 0;
+        }
+
+        void Sight(std::uintptr_t address, const char* list)
+        {
+            const auto header = Forms::ReadHeader(address);
+            if (!header || header->formID != 0 || !sighted.insert(address).second) {
+                return;
+            }
+            sightings.push_back({ address, BaseFormID(address), header->flags,
+                Memory::Read<std::array<float, 3>>(address + Forms::Offset::RefPosition).value_or(std::array<float, 3>{}),
+                Memory::Read<std::uintptr_t>(address + Forms::Offset::RefParentCell).value_or(0), list });
+        }
+
+        void LogSightings()
+        {
+            for (const auto& s : sightings) {
+                std::string parent;
+                if (s.parent == 0) {
+                    parent = "null";
+                } else if (Forms::IsLiveCell(s.parent)) {
+                    const auto header = Forms::ReadHeader(s.parent);
+                    parent = std::format("live cell {:08X}", header ? header->formID : 0);
+                } else if (auto freed = Frees::Brief(s.parent); !freed.empty()) {
+                    parent = std::move(freed);
+                } else {
+                    parent = "not a live cell";
+                }
+                spdlog::warn("formID 0 persistent reference 0x{:X} first seen ({} list): base {:08X}, flags {:08X}, "
+                             "position ({:.0f}, {:.0f}, {:.0f}); parentCell 0x{:X}: {}",
+                    s.address, s.list, s.baseFormID, s.flags, s.position[0], s.position[1], s.position[2], s.parent,
+                    parent);
+                if (const auto history = Deletes::Describe(s.address); !history.empty()) {
+                    spdlog::info("  0x{:X} {}", s.address, history);
+                }
+            }
+            sightings.clear();
+        }
+
         // References left pointing at a destroyed cell, for the guards to recognise a stale read.
         // Keyed by reference; an entry only counts while the reference still holds that pointer.
         constexpr std::size_t StaleLimit = 200000;
@@ -106,6 +169,7 @@ namespace StaleParentCellFix::Unlink
                 return;
             }
             const auto address = reinterpret_cast<std::uintptr_t>(reference);
+            Sight(address, list);
             auto* parentCell = reinterpret_cast<std::uintptr_t*>(address + Forms::Offset::RefParentCell);
             if (*parentCell != cell) {
                 return;
@@ -265,6 +329,7 @@ namespace StaleParentCellFix::Unlink
             lock->Unlock();
             const auto elapsed = Microseconds() - start;
             Log(cellFormID);
+            LogSightings();
 
             auto previous = slowest.load();
             while (elapsed > previous && !slowest.compare_exchange_weak(previous, elapsed)) {

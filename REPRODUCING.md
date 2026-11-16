@@ -22,8 +22,10 @@
 
 Every crash so far was on a **leftover**: a reference with formID 0, or a runtime-created one
 (`FF......`), with the deleted flag (`0x20`). A script or mod deleted the object, but it was still
-in the worldspace's persistent list. Live references are re-pointed by the cell's destructor, so
-the fix only clears leftovers.
+in the worldspace's persistent list. The cell's destructor sets `parentCell` to null on live
+references and on the `FF......` deleted leftovers seen at Dawnstar (2026-11-16 00:34); only
+formID-0 references have been proven to stay stale. The fix clears both kinds of leftover, which
+is redundant but harmless for the ones the destructor handles.
 
 ## Why it is hard to hit
 
@@ -122,6 +124,13 @@ narrow. To see the crash again for comparison, set the fix to 0 (and `[Guards] b
 All times are local. Logs are in
 `Documents/My Games/Skyrim Special Edition/SKSE/` (`StaleParentCellFix.log`, `crash-*.log`).
 
+- **2026-11-16 00:34, fix off, checked right after each destructor, stress on.** Three bursts,
+  about 120 persistent references pointing at destroyed cells: the destructor set every one to
+  null, including the three Dawnstar leftovers (the corpse twice). None stayed stale, so the
+  `FF......` deleted leftovers were never dangerous and clearing them was redundant. Cell
+  `000095F7` (the mist's) was destroyed with 6 references and no formID-0 one among them. Only
+  formID-0 references have been proven stale (the mist, 77 s and 163 s after destruction). The
+  next build logs the first sighting of every formID-0 reference in the persistent lists.
 - **2026-11-16 00:24, fix off, stale-read bookkeeping, stress on.** Three unload bursts (00:27:03,
   00:28:55, 00:29:43). Every persistent reference recorded as pointing at a cell just before its
   destruction had been re-pointed by the time the next cell in the same burst was checked, a
