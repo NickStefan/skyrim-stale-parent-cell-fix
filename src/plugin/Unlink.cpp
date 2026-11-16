@@ -98,7 +98,6 @@ namespace StaleParentCellFix::Unlink
         thread_local std::vector<std::pair<std::uintptr_t, Stale>> leftStale;
         std::mutex staleMutex;
         std::unordered_map<std::uintptr_t, Stale> stale;
-        std::uint64_t staleRepointed = 0;  // under staleMutex
         std::atomic<std::uint64_t> staleRead{ 0 };
 
         void Unlink(RE::TESObjectREFR* reference, std::uintptr_t cell, std::uint32_t cellFormID, const char* list)
@@ -266,34 +265,7 @@ namespace StaleParentCellFix::Unlink
             lock->Unlock();
             const auto elapsed = Microseconds() - start;
             Log(cellFormID);
-            {
-                std::scoped_lock guard{ staleMutex };
-                // Drop the ones whose pointer was replaced through a path the guards do not watch.
-                std::uint64_t repointed = 0;
-                for (auto it = stale.begin(); it != stale.end();) {
-                    const auto parent = Memory::Read<std::uintptr_t>(it->first + Forms::Offset::RefParentCell);
-                    if (!parent || *parent != it->second.cell) {
-                        it = stale.erase(it);
-                        ++repointed;
-                    } else {
-                        ++it;
-                    }
-                }
-                staleRepointed += repointed;
-                if (stale.size() + leftStale.size() > StaleLimit) {
-                    spdlog::info("stale reads: forgetting {} remembered stale references", stale.size());
-                    stale.clear();
-                }
-                for (const auto& [reference, entry] : leftStale) {
-                    stale.insert_or_assign(reference, entry);
-                }
-                if (!leftStale.empty() || repointed) {
-                    spdlog::info("cell {:08X} destroyed: {} persistent reference(s) left pointing at it; stale "
-                                 "pointers remembered {}, re-pointed without a watched read {} (+{}), read {}",
-                        cellFormID, leftStale.size(), stale.size(), staleRepointed, repointed, staleRead.load());
-                }
-                leftStale.clear();
-            }
+
             auto previous = slowest.load();
             while (elapsed > previous && !slowest.compare_exchange_weak(previous, elapsed)) {
             }
@@ -303,13 +275,46 @@ namespace StaleParentCellFix::Unlink
             }
         }
 
+        // After the game's destructor ran: which of the references that pointed at the cell still
+        // do. Only those are stale; the rest were re-pointed by the destruction itself.
+        void AfterDestroy(std::uint32_t cellFormID)
+        {
+            if (leftStale.empty()) {
+                return;
+            }
+            std::uint64_t still = 0, nulled = 0, elsewhere = 0;
+            std::scoped_lock guard{ staleMutex };
+            if (stale.size() + leftStale.size() > StaleLimit) {
+                spdlog::info("stale reads: forgetting {} remembered stale references", stale.size());
+                stale.clear();
+            }
+            for (const auto& [reference, entry] : leftStale) {
+                const auto parent = Memory::Read<std::uintptr_t>(reference + Forms::Offset::RefParentCell).value_or(0);
+                if (parent == entry.cell) {
+                    ++still;
+                    stale.insert_or_assign(reference, entry);
+                } else if (parent == 0) {
+                    ++nulled;
+                } else {
+                    ++elsewhere;
+                }
+            }
+            spdlog::info("cell {:08X} destroyed: of {} persistent reference(s) pointing at it, {} still do afterwards "
+                         "(stale), {} were set to null, {} to another cell; stale pointers remembered {}, read {}",
+                cellFormID, leftStale.size(), still, nulled, elsewhere, stale.size(), staleRead.load());
+            leftStale.clear();
+        }
+
         using Deleter = void* (*)(void*, std::uint32_t);
         Deleter cellDelete = nullptr;
 
         void* CellDelete(void* self, std::uint32_t flags)
         {
+            const auto header = Forms::ReadHeader(reinterpret_cast<std::uintptr_t>(self));
             BeforeDestroy(static_cast<RE::TESObjectCELL*>(self));
-            return cellDelete(self, flags);
+            const auto result = cellDelete(self, flags);
+            AfterDestroy(header ? header->formID : 0);
+            return result;
         }
     }
 

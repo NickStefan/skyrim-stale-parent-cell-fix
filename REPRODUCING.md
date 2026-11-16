@@ -8,9 +8,9 @@
    alive on its own.
 2. **Leave until the cell is destroyed, not just unloaded.** Unloaded exterior cells stay in the
    cell buffer (`uExterior Cell Buffer`, 36 by default) until enough other cells push them out, or
-   until fast travel unloads everything. When one is destroyed, its destructor drops its references
-   but never clears their `parentCell`. Every persistent reference of that cell now points at freed
-   memory; one fast travel left about 50 that way, mostly ordinary markers and NPCs.
+   until fast travel unloads everything. When one is destroyed, the destructor re-points the
+   `parentCell` of the live persistent references that were in it, but not of leftovers that are
+   still in the worldspace's persistent lists: those keep pointing at the freed memory.
 3. **Something touches a bad one.** Either:
    - **Come back to the same cell.** The loader (ID 20532) puts the cell's persistent references
      back into it. With a non-null `parentCell` it first reads a flag from that cell and removes the
@@ -22,8 +22,8 @@
 
 Every crash so far was on a **leftover**: a reference with formID 0, or a runtime-created one
 (`FF......`), with the deleted flag (`0x20`). A script or mod deleted the object, but it was still
-in the worldspace's persistent list. Live references are left stale just as often and have not
-crashed, so the fix only clears leftovers.
+in the worldspace's persistent list. Live references are re-pointed by the cell's destructor, so
+the fix only clears leftovers.
 
 ## Why it is hard to hit
 
@@ -122,6 +122,12 @@ narrow. To see the crash again for comparison, set the fix to 0 (and `[Guards] b
 All times are local. Logs are in
 `Documents/My Games/Skyrim Special Edition/SKSE/` (`StaleParentCellFix.log`, `crash-*.log`).
 
+- **2026-11-16 00:24, fix off, stale-read bookkeeping, stress on.** Three unload bursts (00:27:03,
+  00:28:55, 00:29:43). Every persistent reference recorded as pointing at a cell just before its
+  destruction had been re-pointed by the time the next cell in the same burst was checked, a
+  millisecond later, so the destructor itself updates live references. No stale reads. The next
+  build checks right after each destructor returns, separately counting pointers left stale, set
+  to null, or set to another cell.
 - **2026-11-16 00:03, fix off, guards on, stress on.** One Dawnstar - Tundra Homestead cycle: no
   crash, no `PREVENTED`, no access violation. Expected for a use-after-free that only crashes when
   the freed memory has been reused by the time it is read; it does not show the leftovers are
@@ -144,8 +150,8 @@ All times are local. Logs are in
 - **2026-11-15 22:33, fix clearing every reference, stress on.** One fast travel at 22:38:15
   destroyed cells `00008E98`, `00008ED7`, `00008E77` and `00008E76` and cleared 50 references:
   37 fixed, 13 mobile, nearly all live (XMarkers `00000034`, XMarkerHeadings `0000003B`, mod NPCs
-  and objects). This showed the engine leaves every persistent reference stale, which led to
-  narrowing the fix. Slowest check 1293 us.
+  and objects). That was a snapshot taken before the destructor ran; the 00:24 session showed the
+  destructor re-points live ones itself. It still led to narrowing the fix. Slowest check 1293 us.
 - **2026-11-15 22:01, crash in the plugin (`crash-2026-11-15-22-01-52.log`).** Fast travel to
   Tundra Homestead destroyed cell `00008E98`, and the fix crashed in
   `StaleParentCellFix.dll+0028488` reading address `0x80` while walking `fixedPersistentRefMap`.

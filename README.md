@@ -75,11 +75,12 @@ reads a flag from that cell, which with a stale pointer is a read of freed memor
 is re-added the same way. Each cleared reference is logged as "cell X destroyed: cleared stale
 parentCell of persistent reference ..." with its formID, base, flags and which list it was in.
 
-Why only formID 0 or deleted ones: the engine leaves every persistent reference of a destroyed
-exterior cell pointing at it, live ones included (markers, NPCs); a build that cleared them all
-cleared about 50 on one fast travel. Reloading handles null fine, but what else reads a live
-reference's cell while that cell is unloaded (quest markers, Papyrus `GetParentCell`, saving) is
-unknown, and there null would change what the game sees. Every crash so far was on a leftover
+Why only formID 0 or deleted ones: just before destruction many live persistent references still
+point at the cell (a build that cleared them all cleared about 50 on one fast travel), but the
+destructor itself re-points those: checked a millisecond later, at the next destruction in the
+same burst (2026-11-16 00:27), every one of them pointed elsewhere. The leftovers are the ones it misses. Clearing live ones early is
+unnecessary, and what reads a live reference's cell in between (quest markers, Papyrus
+`GetParentCell`, saving) is unknown. Every crash so far was on a leftover
 with formID 0, the guarded ones also with the deleted flag (the `AlphaTest` swap of the Tundra
 Homestead mist), so the fix is limited to those and live references keep the game's behavior. A
 live reference hitting the same race would be caught by the guards and show up as `PREVENTED`.
