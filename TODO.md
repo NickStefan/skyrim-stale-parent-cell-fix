@@ -77,9 +77,13 @@ Order: item 3 first (costs no play time), then items 1 and 2 before the next ses
   formID (sets it to 0) and drops it from the form map and the cell's list. A counted pointer in
   the worldspace's persistent list keeps it alive as a zombie, with a valid vtable, that no
   cleanup path knows about. That would answer both open questions above. Items 1 to 3 test it.
-- Installed suspect: Disabled Reference Integrity Fix 1.5.0 is in every crash's module list. It
-  hooks `InitItemImpl` and `Load3D` on references and moves references with base `00058E92`
-  (`AlphaTest`, the mist's swapped base) to Z -30000. `include_deleted_refs` is off, and the mist
-  itself is not in its log. A test: `early_fix_on_load3d = false` for a session.
+- Ruled out: Disabled Reference Integrity Fix 1.5.0 (source read 2026-11-16, in
+  `Projects/Examples/DisabledReferenceIntegrityFix`). It never deletes references, changes
+  formIDs, moves them between cells or touches persistent lists. Its only flag writes are setting
+  initially disabled and, with `include_deleted_refs` (off here), clearing deleted. It acts only
+  on references that are initially disabled or below Z -30000; the mist was neither (flags `0x2B`,
+  Z -4960). Formid-0 deleted references also appear in crash logs from before the mod existed.
+  Its `InitItemImpl` / `Load3D` hooks do read `parentCell` (`IsAttached`, `loadedData`), so it
+  could be a victim of a stale pointer, never the cause.
 - Similar but not this bug: Shadow Scene Node Crash Fix (deleted lights still in light lists after
   a cell change), the same "list outlives its entry" family.
