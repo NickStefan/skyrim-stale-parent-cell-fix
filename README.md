@@ -81,6 +81,17 @@ Static findings on the mechanism:
   and before every cell destruction); the first check that finds it gone logs the set's slot
   array, capacity and free count before and after, every `RemoveReference` on that cell in the
   window, and the cell object's address.
+- Root cause (2026-11-16, 12:18 capture plus disassembly): the watch caught 51 of the cell's 58
+  set entries leaving within 3 ms of its destruction, same slot array, no `RemoveReference`, same
+  cell object. The cell unload-and-destroy (13721) calls 19113, which collects the cell's
+  non-persistent references and erases them from the set inline (19235, through the filter in
+  19230), then releases each with 36459 and `removeFromCell` false, relying on it to null
+  `parentCell`. 36459 opens with `if (reference->formID == 0) return;`. A revived leftover has
+  formID 0, so it is erased from the set and never unlinked; the destructor (19410) then skips it.
+  `Release.cpp` hooks 36459 and, for a formID 0 reference that still has a `parentCell`, does
+  what the early return skips (remove from the cell if asked, then `SetParentCell(nullptr)`)
+  before calling the original. `[Fix] bCompleteRelease`, on by default; the destroy-time fix
+  stays as a backstop and should find nothing left to clear.
 
 ## What the plugin does
 

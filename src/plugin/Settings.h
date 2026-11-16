@@ -12,6 +12,7 @@ namespace StaleParentCellFix::Settings
         bool trackStoryEvents = true;
         bool stressPurge = false;
         bool unlink = true;
+        bool completeRelease = true;
         int detailedPerSite = 20;
         int probeReports = 8;
     };

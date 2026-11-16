@@ -4,6 +4,7 @@
 #include "plugin/Frees.h"
 #include "plugin/Guards.h"
 #include "plugin/Probe.h"
+#include "plugin/Release.h"
 #include "plugin/Report.h"
 #include "plugin/Settings.h"
 #include "plugin/Unlink.h"
@@ -33,6 +34,9 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
     }
     if (settings.trackDeletes) {
         StaleParentCellFix::Deletes::Install();
+    }
+    if (settings.completeRelease) {
+        StaleParentCellFix::Release::Install();
     }
     StaleParentCellFix::Unlink::Install(settings.unlink);
     if (settings.trackStoryEvents) {
