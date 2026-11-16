@@ -28,56 +28,26 @@ affected.
 
 ## What the plugin does
 
-**Source fix** (`[Fix] bCompleteRelease`, `Release.cpp`): hooks the release routine (ID 36459).
-When it is given a reference whose formID is already 0 but that still points at a cell, the hook
-first does what the game skips: removes it from the cell if the caller asked for that, and clears
-its `parentCell`. Then the original runs as before. Logged as "release of an already released
-reference ... cleared its parentCell, which the game skips".
+One hook, on the release routine (ID 36459, `Release.cpp`). When the game asks it to release a
+reference whose formID is already 0 but that still points at a cell, the hook first does what the
+game skips: removes the reference from the cell if the caller asked for that, and clears its
+`parentCell`. Then the original runs as before. A null `parentCell` is a state the game already
+handles. Nothing else is patched.
 
-**Destroy-time fix** (`[Fix] bUnlinkPersistentReferences`, `Unlink.cpp`), the backstop: before an
-exterior cell is destroyed, it takes the worldspace's persistent-list lock (ID 401119, bounded so
-it can never deadlock) and clears `parentCell` on every persistent reference that points at the
-cell but is not in the cell's own reference list: exactly the ones the destructor would leave
-dangling. With the source fix on it should find nothing. Logged as "cell X destroyed: cleared
-parentCell of persistent reference ...". A null `parentCell` is a state the loader already handles.
+Each fix is logged as "fixed released reference 0x... (base ..., flags ..., position (...)) still
+pointing at cell ...: cleared its parentCell", and the first one in a session shows a HUD message
+(`[General] bNotifications` in `StaleParentCellFix.ini`). The hook checks the function's first
+bytes before patching; on a mismatch (another mod or game version) it logs an error and does
+nothing.
 
-**Guards** (`[Guards] bEnabled`), in case something is still missed: entry detours (prologue bytes
-verified first; a mismatch skips that guard and logs it) on the functions the crashes fault in.
-
-| ID | function | when the object is dead |
-| --- | --- | --- |
-| 18365 | `BGSLocation::IsChild` | reference / parentCell / worldSpace not live: return false |
-| 20539 | `TESWorldSpace::GetLocationFromCoordinates` | worldspace not live: return null |
-| 20498 | `TESWorldSpace::GetLocation` | worldspace not live: return null |
-| 18905 | `TESObjectCELL::GetLocation` | cell not live: return null |
-| 18988 | `TESObjectCELL::GetEncounterZone` | cell not live: return null |
-| 19411 | `TESObjectCELL::AddReference` | old parentCell not live: cut the link, then add |
-
-"Live" means readable (SEH-guarded, non-canonical pointers refused) with the right vtable and form
-type. Each prevented crash is logged as `PREVENTED` with the thread, both objects and the call
-stack.
-
-**Diagnostics** (`[Diagnostics]`), used to find the cause and kept for reports:
-
-- Destroyed cells (with call stacks) and references, so a dangling pointer can be described as
-  "FREED: ... into TESObjectCELL ..., destroyed N ms ago on ...; stack then: ...".
-- History of references being deleted (`SetDelete`), set to formID 0 (`SetFormID`), given a cell
-  while formID 0 (`SetParentCell`) and removed from a cell (`RemoveReference`), with call stacks,
-  printed under every reference a fix touches.
-- The first sighting of each formID-0 reference in the persistent lists, and a watch on each one
-  put back into a cell that logs if it drops out of the cell's list.
-- Call stacks of recent Change Location story events, added to reports.
-- The first few access violations in SkyrimSE.exe code (logged, never handled).
-- A HUD notification the first time in a session that anything worth sending happens.
-
-Settings and their descriptions are in `StaleParentCellFix.ini`.
+The investigation build (diagnostics, crash guards and a destroy-time backstop) is in git history
+up to commit `a09749b`; see [FINDINGS.md](FINDINGS.md).
 
 ## Build (Linux / SteamOS)
 
 ```sh
 python3 tools/fetch_toolchain.py   # once; links ../SkiingInSkyrim's toolchain and CommonLib (read only)
 python3 tools/build.py             # build/mod/SKSE/Plugins: DLL, PDB, INI
-python3 tools/build.py test        # src/core tests (SEH guard, RTTI names) under Wine
 ```
 
 Analysis helpers: `tools/steamstub.py` writes a decrypted `build/SkyrimSE.unpacked.exe`;
@@ -86,20 +56,16 @@ Analysis helpers: `tools/steamstub.py` writes a decrypted `build/SkyrimSE.unpack
 ## Testing
 
 1. Copy `build/mod` into the game's Data folder (or a mod manager folder). 1.6.629+ only.
-2. Check `StaleParentCellFix.log` in the SKSE log folder: the settings line, "completing the release
-   of already released references ...", "unlinking persistent references ...", and a "guarded" line
-   per hook. A hook whose bytes do not match logs an error instead and is skipped.
-3. Play, or follow a route from [REPRODUCING.md](REPRODUCING.md) (the Tundra Homestead loop
-   triggers it within minutes on the affected load order).
-4. The HUD says when the log has something worth sending. "Caught a formID 0 reference" and
-   "fixed a reference at the source" are expected: a leftover was created, and the source fix
-   handled it. "Prevented a stale cell pointer" (the backstop), "a reference was left pointing at
-   a destroyed cell" or "a guard prevented a crash" mean something got past the source fix: send
-   `StaleParentCellFix.log` and any new crash log.
+2. Check `StaleParentCellFix.log` in the SKSE log folder: the settings line, "ReleaseReference ...
+   hooked" and "completing the release of already released references ...".
+3. Play, or follow the Tundra Homestead loop in [REPRODUCING.md](REPRODUCING.md), which triggers it
+   within minutes on the affected load order.
+4. "StaleParentCellFix: fixed a stale cell reference" on the HUD means the fix just prevented the
+   crash's setup; the log says which reference it was.
 
 ## About the name
 
 The name describes the defect, a `parentCell` left pointing at a freed cell, which is also what a
 crash log shows. The root cause is more specific (the release routine skipping already released
-references), but both fixes still clear that stale pointer, and the name matches what users search
+references), but the fix still works by clearing that stale pointer, and the name matches what users search
 for.

@@ -2,7 +2,9 @@
 
 How the stale `parentCell` crash happens, from crash logs, disassembly of Skyrim 1.6.640 and
 in-game captures. Function numbers are Address Library IDs (AE); `tools/addrlib.py dis <id>`
-disassembles them from the decrypted exe (`tools/steamstub.py`).
+disassembles them from the decrypted exe (`tools/steamstub.py`). The hooks and diagnostics
+mentioned below are in the investigation build, commit `a09749b`; the current plugin is only the
+fix.
 
 ## The crashes
 

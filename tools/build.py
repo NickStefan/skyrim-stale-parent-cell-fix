@@ -2,7 +2,6 @@
 """Build StaleParentCellFix.dll with MSVC under Wine and assemble build/mod.
 
     python3 tools/build.py          build the plugin and assemble build/mod
-    python3 tools/build.py test     build and run the src/core tests under Wine
     python3 tools/build.py clean    remove build outputs (keeps the Wine prefix)
 
 Run tools/fetch_toolchain.py once first. Nothing is copied into the game.
@@ -126,7 +125,7 @@ def build_plugin(dependencies):
         pch_obj.parent.mkdir(parents=True, exist_ok=True)
         msvc('cl', base_flags() + ['/c', '/YcPCH.h', '/Fp' + wine_env.win(pch),
                                    '/Fo' + wine_env.win(pch_obj), wine_env.win(pch_source)])
-    sources = sorted((SRC / 'plugin').rglob('*.cpp')) + sorted((SRC / 'core').rglob('*.cpp'))
+    sources = sorted((SRC / 'plugin').rglob('*.cpp'))
     objects = [OBJ / 'plugin' / (s.relative_to(SRC).with_suffix('.obj').as_posix().replace('/', '_')) for s in sources]
     use_pch = ['/YuPCH.h', '/FIPCH.h', '/Fp' + wine_env.win(pch)]
     compile_all([(s, o, use_pch, [*headers, pch]) for s, o in zip(sources, objects)])
@@ -196,33 +195,7 @@ def package(dll, pdb):
     print(f'Packaged {plugins.relative_to(ROOT)}')
 
 
-def run_tests():
-    """src/core and tests only: no CommonLib, static CRT, run under Wine."""
-    sources = sorted((SRC / 'core').rglob('*.cpp')) + sorted((ROOT / 'tests').glob('*.cpp'))
-    objects = [OBJ / 'tests' / (s.parent.name + '_' + s.stem + '.obj') for s in sources]
-    headers = [*SRC.rglob('*.h'), *(ROOT / 'tests').glob('*.h')]
-    flags = ['/nologo', '/std:c++latest', '/EHsc', '/permissive-', '/utf-8', '/MT', '/O2', '/W4', '/WX',
-             '/DNOMINMAX', '/DWIN32_LEAN_AND_MEAN', '/I' + wine_env.win(SRC), '/I' + wine_env.win(ROOT / 'tests')]
-    todo = [(s, o) for s, o in zip(sources, objects) if stale(o, [s, *headers])]
-
-    def one(job):
-        job[1].parent.mkdir(parents=True, exist_ok=True)
-        msvc('cl', flags + ['/c', '/Fo' + wine_env.win(job[1]), wine_env.win(job[0])])
-
-    with concurrent.futures.ThreadPoolExecutor(JOBS) as pool:
-        list(pool.map(one, todo))
-    exe = OBJ / 'tests/StaleParentCellFixTests.exe'
-    if stale(exe, objects):
-        msvc('link', ['/NOLOGO', '/OUT:' + wine_env.win(exe), *map(wine_env.win, objects)])
-    if wine_env.run(exe, []).returncode != 0:
-        raise SystemExit('tests failed')
-
-
 def main():
-    if sys.argv[1:] == ['test']:
-        wine_env.ensure_prefix()
-        run_tests()
-        return
     if sys.argv[1:] == ['clean']:
         for path in (OBJ, BUILD / 'mod', BUILD / (NAME + '.dll'), BUILD / (NAME + '.pdb')):
             shutil.rmtree(path, ignore_errors=True) if path.is_dir() else path.unlink(missing_ok=True)

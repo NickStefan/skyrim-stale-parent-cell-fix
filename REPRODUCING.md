@@ -98,37 +98,32 @@ leftovers never did.
 ## Steps
 
 1. Use a save with plenty of quest progress, not a fresh character.
-2. In `StaleParentCellFix.ini`:
-   - `[Stress] bPurgeCellsOnLocationChange=1` purges the cell buffer after every Change Location
-     event, so step 2 happens every time you cross a boundary. Test sessions only. Reinstalling the
-     mod resets it to 0.
-   - `[Guards] bEnabled=1` to catch it as a `PREVENTED` entry (with a HUD notification), or `0` to
-     let it crash; the crash probe still logs the details first.
-3. Visit a trigger area above, or move on a route that crosses many locations **and doubles back**:
+2. Visit a trigger area above, or move on a route that crosses many locations **and doubles back**:
    - Riverwood - Embershard - Alpha Wolf Den - Riverwood - Whiterun, then back again.
    - Whiterun - Battle-Born Farm - Loreius Farm - Whitewatch Tower - Dawnstar, and back.
    - Nightcaller Temple - Dawnstar.
-4. Send back `StaleParentCellFix.log` and any new crash log from the SKSE log folder.
+3. Send back `StaleParentCellFix.log` and any new crash log from the SKSE log folder.
 
-## Checking the fixes
+The stress mode (`[Stress] bPurgeCellsOnLocationChange`, purging the cell buffer at every
+location change) and the crash guards used in the sessions below are in the investigation build,
+commit `a09749b`.
 
-With the defaults, the steps above should produce, for each leftover that would have gone stale:
+## Checking the fix
 
-- `release of an already released reference 0x... (formID 0, base 00058E92, flags 0000002B) still
-  pointing at cell 000095F7 (...): cleared its parentCell, which the game skips`: the source fix
-  (`[Fix] bCompleteRelease`).
-- No `cell ... destroyed: cleared parentCell of persistent reference` lines: those are the
-  destroy-time backstop (`bUnlinkPersistentReferences`) catching what the source fix missed.
-- No `PREVENTED` entries (guards) and no access violations.
+With the fix installed, the steps above should produce, for each leftover that would have gone
+stale, a line like:
 
-"formID 0 persistent reference ... first seen" lines are normal: they record leftovers being
-created (step 1), which the plugin does not prevent. A `left the reference list of cell ...
-without RemoveReference` warning (the watch) is expected too if a check lands between the game
-taking the reference out of the list and the source fix running; it describes step 3, not a
-failure.
+```
+fixed released reference 0x... (base 00058E92, flags 0000002B, position (...)) still pointing at
+cell 000095F7: cleared its parentCell (#1)
+```
 
-To compare: with `bCompleteRelease=0` the backstop clears the same references when their cell is
-destroyed; with both fixes and `[Guards] bEnabled=0` the crash can happen again.
+and, the first time in a session, the HUD message "StaleParentCellFix: fixed a stale cell
+reference". No crash in `TESObjectCELL::AddReference` / `GetEncounterZone`, `BGSLocation::IsChild`
+or `TESWorldSpace::GetLocationFromCoordinates` should follow. Without the leftovers (for example,
+without `_NoMoreMist_SWAP.ini`) the log stays empty after startup.
+
+To see the crash again for comparison, remove the DLL.
 
 ## Sessions
 
