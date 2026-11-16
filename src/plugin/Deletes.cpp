@@ -24,15 +24,18 @@ namespace StaleParentCellFix::Deletes
             std::uint32_t cellFormID;
             std::uint32_t thread;
             Stack stack;
-            bool inCellSet = false;  // attached: whether it was in the new cell's set right after
+            bool inCellSet = false;   // attached: whether it was in the new cell's set right after
+            bool parentKept = false;  // detached: whether parentCell still pointed at the cell after
         };
 
         Ring<Record, 8192> deletes;
         Ring<Record, 4096> released;  // formID set to 0
         Ring<Record, 1024> attached;  // a formID 0 reference given a non-null parentCell
+        Ring<Record, 1024> detached;  // a formID 0 reference removed from a cell's reference set
         bool installed = false;
         bool releaseHooked = false;
         bool attachHooked = false;
+        bool detachHooked = false;
 
         // Copies taken at a reference's first formID 0 sighting, so they outlive the rings.
         struct Pinned
@@ -121,6 +124,29 @@ namespace StaleParentCellFix::Deletes
             record.inCellSet = Unlink::InCellSet(reinterpret_cast<std::uintptr_t>(cell), address);
         }
 
+        // ID 19032: TESObjectCELL::RemoveReference. Its entry is `if (!reference) return;`, which
+        // the hook does itself.
+        using RemoveReferenceFn = void (*)(RE::TESObjectCELL*, RE::TESObjectREFR*);
+        RemoveReferenceFn removeReference = nullptr;
+
+        void RemoveReference(RE::TESObjectCELL* cell, RE::TESObjectREFR* reference)
+        {
+            if (!reference) {
+                return;
+            }
+            const bool zero = reference->formID == 0;
+            removeReference(cell, reference);
+            if (!zero || !cell) {
+                return;
+            }
+            const auto address = reinterpret_cast<std::uintptr_t>(reference);
+            auto& record = Remember(detached, address);
+            record.cellFormID = cell->formID;
+            record.parentKept =
+                Memory::Read<std::uintptr_t>(address + Forms::Offset::RefParentCell).value_or(0) ==
+                reinterpret_cast<std::uintptr_t>(cell);
+        }
+
         std::optional<Record> Find(const auto& ring, std::uintptr_t reference)
         {
             std::optional<Record> found;
@@ -142,6 +168,22 @@ namespace StaleParentCellFix::Deletes
                 record.baseFormID, record.flags, record.cellFormID, Report::StackTrace(record.stack.View()));
         }
 
+        // The newest few records of this reference in `ring`; false if there were none.
+        bool History(std::string& out, const auto& ring, std::uintptr_t reference, auto describe)
+        {
+            std::vector<Record> found;
+            ring.Scan([&](const Record& record) {
+                if (record.address == reference) {
+                    found.push_back(record);
+                }
+                return found.size() < 4;
+            });
+            for (const auto& record : found) {
+                out += "\n    " + Line(describe(record), record);
+            }
+            return !found.empty();
+        }
+
         template <std::size_t Slot>
         void Write(REL::VariantID vtable)
         {
@@ -161,10 +203,14 @@ namespace StaleParentCellFix::Deletes
         setParentCell = Detour::Entry("TESObjectREFR::SetParentCell", REL::ID(19818),
             std::array<std::uint8_t, 10>{ 0x48, 0x89, 0x5C, 0x24, 0x10, 0x57, 0x48, 0x83, 0xEC, 0x20 }, &SetParentCell);
         attachHooked = setParentCell != nullptr;
+        removeReference = Detour::EntryPastGuard("TESObjectCELL::RemoveReference", REL::ID(19032),
+            std::array<std::uint8_t, 9>{ 0x48, 0x85, 0xD2, 0x0F, 0x84, 0x9D, 0x03, 0x00, 0x00 }, &RemoveReference);
+        detachHooked = removeReference != nullptr;
         installed = true;
-        spdlog::info("tracking who deletes references{}{}",
+        spdlog::info("tracking who deletes references{}{}{}",
             releaseHooked ? ", who sets their formID to 0" : "; SetFormID not hooked",
-            attachHooked ? ", and who gives a formID 0 reference a cell" : "; SetParentCell not hooked");
+            attachHooked ? ", who gives a formID 0 reference a cell" : "; SetParentCell not hooked",
+            detachHooked ? ", and who removes one from a cell" : "; RemoveReference not hooked");
     }
 
     std::string Describe(std::uintptr_t reference)
@@ -194,23 +240,24 @@ namespace StaleParentCellFix::Deletes
                        "written directly, or too long ago)";
             }
         }
+        const auto header = Forms::ReadHeader(reference);
+        const bool zero = header && header->formID == 0;
         if (attachHooked) {
-            std::vector<Record> found;
-            attached.Scan([&](const Record& record) {
-                if (record.address == reference) {
-                    found.push_back(record);
-                }
-                return found.size() < 4;
+            const bool any = History(out, attached, reference, [](const Record& record) {
+                return record.inCellSet ? "given parentCell (and in that cell's reference list)"
+                                        : "given parentCell but NOT in that cell's reference list";
             });
-            for (const auto& record : found) {
-                out += "\n    " + Line(record.inCellSet ? "given parentCell (and in that cell's reference list)"
-                                                         : "given parentCell but NOT in that cell's reference list",
-                                       record);
+            if (!any && zero) {
+                out += "\n    no SetParentCell recorded while it had formID 0";
             }
-            if (found.empty()) {
-                if (const auto header = Forms::ReadHeader(reference); header && header->formID == 0) {
-                    out += "\n    no SetParentCell recorded while it had formID 0";
-                }
+        }
+        if (detachHooked) {
+            const bool any = History(out, detached, reference, [](const Record& record) {
+                return record.parentKept ? "removed from the cell's reference list, parentCell LEFT pointing at it"
+                                         : "removed from the cell's reference list, parentCell changed";
+            });
+            if (!any && zero) {
+                out += "\n    no RemoveReference recorded while it had formID 0";
             }
         }
         return out;

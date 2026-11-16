@@ -8,6 +8,18 @@ namespace StaleParentCellFix::Detour
     // written and 0 is returned.
     std::uintptr_t Entry(std::string_view name, REL::ID id, std::span<const std::uint8_t> expected, std::uintptr_t hook);
 
+    // Like Entry, for a function that opens with an early-out the hook reproduces itself (such as
+    // a null check jumping to a ret): returns the address just past `expected`, entered with the
+    // same arguments.
+    std::uintptr_t EntryPastGuard(std::string_view name, REL::ID id, std::span<const std::uint8_t> expected,
+        std::uintptr_t hook);
+
+    template <class F>
+    F EntryPastGuard(std::string_view name, REL::ID id, std::span<const std::uint8_t> expected, F hook)
+    {
+        return reinterpret_cast<F>(EntryPastGuard(name, id, expected, reinterpret_cast<std::uintptr_t>(hook)));
+    }
+
     // Redirects a 5-byte E8 call; returns the original callee, or 0 if the site is not that call.
     std::uintptr_t Call(std::string_view name, REL::ID id, std::ptrdiff_t offset, std::uintptr_t expectedCallee,
         std::uintptr_t hook);

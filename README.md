@@ -68,8 +68,12 @@ Static findings on the mechanism:
   mist formID piled up a dead copy each time its cell reloaded. Three minutes after the Tundra
   Homestead mist `000DA6AD` was released this way (null `parentCell`), it pointed at its cell
   `000095F7` again without being in that cell's reference list, and the fix cleared it when the
-  cell was destroyed. What re-points it is the open question; the `SetParentCell` hook (19818)
-  records that step.
+  cell was destroyed. Second capture (11:42-11:43): released at 11:42:21; at 11:42:49 the cell
+  loader (20532, on a cell-loading worker thread, via `AddReference` 19411) re-added the dead
+  leftover to cell `000095F7`, properly, into its reference list; 18 s later it was no longer in
+  that list but still pointed at the cell, and the fix cleared it at 11:43:07. So the loader
+  revives leftovers from the mobile list, and something then removes them from the cell's list
+  without clearing `parentCell`. The `RemoveReference` hook (19032) records that step.
 
 ## What the plugin does
 
