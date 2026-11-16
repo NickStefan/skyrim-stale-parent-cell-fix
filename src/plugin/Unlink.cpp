@@ -290,6 +290,14 @@ namespace StaleParentCellFix::Unlink
             }
             for (const auto& [reference, entry] : leftStale) {
                 const auto parent = Memory::Read<std::uintptr_t>(reference + Forms::Offset::RefParentCell).value_or(0);
+                if (entry.formID == 0 || (entry.flags & DeletedFlag)) {
+                    spdlog::info("cell {:08X} destroyed: leftover 0x{:X} (formID {:08X}, base {:08X}, flags {:08X}) "
+                                 "afterwards {}",
+                        cellFormID, reference, entry.formID, entry.baseFormID, entry.flags,
+                        parent == entry.cell ? "still points at it (stale)"
+                        : parent == 0        ? "has parentCell null"
+                                             : "points at another cell");
+                }
                 if (parent == entry.cell) {
                     ++still;
                     stale.insert_or_assign(reference, entry);
