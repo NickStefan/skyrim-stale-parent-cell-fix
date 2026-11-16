@@ -58,3 +58,28 @@ With all three, one capture should say who zeroed the formID, from what call pat
 destructor skipped it: enough to fix it at the source, or to state precisely what the real fix is.
 
 Order: item 3 first (costs no play time), then items 1 and 2 before the next session.
+
+## Leads from the web (2026-11-16)
+
+- [xOBSE issue #252](https://github.com/llde/xOBSE/issues/252) (Oblivion, same engine lineage): a
+  `PlaceAtMe` reference removed with `DeleteReference` is properly deleted, but a dangling pointer
+  stays in the cell's object list; scanning the cell finds it with formID 0, and it passes the
+  validity check. Open question there: why the reference destructor did not remove it from the
+  list. Same signature as ours: formID 0 + deleted, still in a list the engine should have
+  cleaned.
+- Crash Logger logs from other users show the same object state, so it is not specific to this
+  load order: formID 0 with `kDeleted`, for example flags `0x0002012A` on `ActorCharacter`
+  references ([pastebin 16MCqbZy](https://pastebin.com/16MCqbZy),
+  [pastebin S0Ktuh5i](https://pastebin.com/S0Ktuh5i),
+  [reddit](https://www.reddit.com/r/skyrimmods/comments/10xdmq7/getting_weird_random_crashes_and_i_would_love/)).
+  Ours: flags `0x2B` on a `TESObjectREFR`. Nobody there identified a cause.
+- Working theory this supports: once the engine finishes deleting a reference, it releases the
+  formID (sets it to 0) and drops it from the form map and the cell's list. A counted pointer in
+  the worldspace's persistent list keeps it alive as a zombie, with a valid vtable, that no
+  cleanup path knows about. That would answer both open questions above. Items 1 to 3 test it.
+- Installed suspect: Disabled Reference Integrity Fix 1.5.0 is in every crash's module list. It
+  hooks `InitItemImpl` and `Load3D` on references and moves references with base `00058E92`
+  (`AlphaTest`, the mist's swapped base) to Z -30000. `include_deleted_refs` is off, and the mist
+  itself is not in its log. A test: `early_fix_on_load3d = false` for a session.
+- Similar but not this bug: Shadow Scene Node Crash Fix (deleted lights still in light lists after
+  a cell change), the same "list outlives its entry" family.
