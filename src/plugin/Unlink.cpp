@@ -154,6 +154,7 @@ namespace StaleParentCellFix::Unlink
             if (!sighted.insert(address).second) {
                 return;
             }
+            Deletes::Pin(address);
             const auto known = knownDeleted.find(address);
             sightings.push_back({ address, BaseFormID(address), header->flags,
                 Memory::Read<std::array<float, 3>>(address + Forms::Offset::RefPosition).value_or(std::array<float, 3>{}),
@@ -486,6 +487,11 @@ namespace StaleParentCellFix::Unlink
             AfterDestroy(header ? header->formID : 0);
             return result;
         }
+    }
+
+    bool InCellSet(std::uintptr_t cell, std::uintptr_t reference)
+    {
+        return CellSet(cell).contains(reference);
     }
 
     void Install(bool clear)

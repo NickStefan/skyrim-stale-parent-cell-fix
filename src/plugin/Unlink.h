@@ -14,4 +14,7 @@ namespace StaleParentCellFix::Unlink
 {
     // With `clear` false nothing is changed; references are only checked and logged.
     void Install(bool clear);
+
+    // Whether `reference` is in the cell's own reference set (read without the cell's lock).
+    bool InCellSet(std::uintptr_t cell, std::uintptr_t reference);
 }

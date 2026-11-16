@@ -60,10 +60,16 @@ Static findings on the mechanism:
   while cells behind the player are being torn down.
 - Confirmed in play (2026-11-15): the worldspace's persistent reference lists hold the reference
   across the cell's destruction, and the cell loader (20532) re-adds it when the cell comes back.
-  The formID was not cleared through `TESForm::SetFormID` (a hook on it, installed before data
-  load, never saw it); how it reaches 0 is still unknown. The game's own reference release
-  (36459) does use `SetFormID(0)`, after removing the reference from its cell and nulling its
-  `parentCell`, so that path cannot produce this state.
+- Confirmed in play (2026-11-16, 11:21-11:28): the formID is zeroed by the game's own reference
+  release (36459), called on the main thread from a per-grid-cell cleanup (18233/18235 -> 18237,
+  which first removes the reference from its cell with 19032). It marks the reference deleted,
+  nulls `parentCell` and calls `SetFormID(0)`, but leaves it in the worldspace's mobile
+  persistent list. Every one seen had base `AlphaTest` (No More Mist's swap target), and the same
+  mist formID piled up a dead copy each time its cell reloaded. Three minutes after the Tundra
+  Homestead mist `000DA6AD` was released this way (null `parentCell`), it pointed at its cell
+  `000095F7` again without being in that cell's reference list, and the fix cleared it when the
+  cell was destroyed. What re-points it is the open question; the `SetParentCell` hook (19818)
+  records that step.
 
 ## What the plugin does
 

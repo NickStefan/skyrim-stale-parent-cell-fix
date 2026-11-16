@@ -11,5 +11,10 @@ namespace StaleParentCellFix::Deletes
     // "deleted 5321 ms ago on main thread (formID FF002527, base FE64B800, flags 00010408, cell
     // 00008ED7); stack then: ..." for the newest deletion of this reference, or a note that none
     // was recorded; then the same for its formID being set to 0, if it was or is 0.
+    // Then each time it was given a parentCell while its formID was 0 (TESObjectREFR::SetParentCell,
+    // ID 19818), and whether it was in that cell's reference list right after.
     std::string Describe(std::uintptr_t reference);
+
+    // Keeps this reference's current deletion and formID records past the rings' turnover.
+    void Pin(std::uintptr_t reference);
 }
