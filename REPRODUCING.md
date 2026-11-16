@@ -75,9 +75,19 @@ loads: the cell's per-reference load step (19084 -> 19286) calls the actor's dea
 (37293: `IsDead`, not initially disabled, and a few more checks), which disables and deletes it
 (19806: `SetDelete(true)`, `SetAltered(true)`). Because the actor is persistent, the worldspace's
 mobile list keeps it alive, so it is never freed. It is re-added to the cell and deleted again on
-every visit, and left stale whenever the cell is destroyed. Whatever made the spawned actor
-persistent (a script or quest alias in the mod that spawns it) is the mod-side half; no script
-deletes it.
+every visit, and left stale whenever the cell is destroyed. No script deletes it, and no quest
+holds it: the holder log (2026-11-15 23:56) shows life state dead, not forced persistent, no quest
+aliases. It carries the persistent flag itself, so it was created persistent, or a quest held it
+earlier and released it.
+
+`FF0025A6` and `FF0025A7` are books held by 3DNPC's running quest `21025759`
+`DialogueJasparGaerston`, aliases "Book2" and "Book1". They are deleted and initially disabled,
+but the filled aliases keep them in the persistent list.
+
+So the sources differ (a base swap, a spawned corpse, quest-created items), but the engine does
+the same thing with all of them: it keeps a deleted but persistent object in the worldspace's
+lists, and leaves its `parentCell` dangling when the cell is destroyed. Every reference that
+actually crashed or tripped a guard had formID 0; these `FF......` leftovers have not crashed yet.
 
 1. Spend some time in Dawnstar.
 2. Travel away (fast travel destroys the area's cells) or cross location boundaries with stress mode.
@@ -112,6 +122,10 @@ narrow. To see the crash again for comparison, set the fix to 0 (and `[Guards] b
 All times are local. Logs are in
 `Documents/My Games/Skyrim Special Edition/SKSE/` (`StaleParentCellFix.log`, `crash-*.log`).
 
+- **2026-11-15 23:53, holder logging on, stress on.** Dawnstar - Tundra Homestead. 23:56:37: the
+  three Dawnstar leftovers cleared again. The corpse `FF002527`: dead, not forced persistent, no
+  quest aliases. The books `FF0025A6` / `FF0025A7`: quest `21025759` `DialogueJasparGaerston`
+  (running), aliases "Book2" / "Book1". All three already deleted in the save.
 - **2026-11-15 23:19, deletion history on, stress on.** Fast travel Dawnstar - Tundra Homestead
   and back, several times. 23:24:58: the same three Dawnstar leftovers cleared, all "no deletion
   recorded" (already deleted in the save). 23:26:35 and 23:28:14: `FF002527` cleared again, each
