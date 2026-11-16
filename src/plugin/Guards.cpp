@@ -4,7 +4,6 @@
 #include "plugin/Forms.h"
 #include "plugin/Memory.h"
 #include "plugin/Report.h"
-#include "plugin/Unlink.h"
 
 namespace StaleParentCellFix::Guards
 {
@@ -17,59 +16,6 @@ namespace StaleParentCellFix::Guards
             return reinterpret_cast<std::uintptr_t>(pointer);
         }
 
-        enum class Holds
-        {
-            SameCell,     // a live cell with the old formID: the cell was reloaded at the same address
-            OtherCell,    // a live cell with another formID: the memory was reused by another cell
-            OldData,      // not a live cell, but the old formID is still readable
-            Overwritten,  // not a live cell, and the old formID is gone
-        };
-
-        Holds WhatItHolds(std::uintptr_t cell, std::uint32_t oldFormID)
-        {
-            const auto header = Forms::ReadHeader(cell);
-            const bool sameFormID = header && header->formID == oldFormID;
-            if (Forms::IsLiveCell(cell)) {
-                return sameFormID ? Holds::SameCell : Holds::OtherCell;
-            }
-            return sameFormID ? Holds::OldData : Holds::Overwritten;
-        }
-
-        std::atomic<std::uint64_t> staleReads{ 0 };
-        std::array<std::atomic<std::uint64_t>, 4> staleByKind{};
-        constexpr std::uint64_t StaleLogLimit = 300;
-
-        // Logs a read of a parentCell the destroy hook left pointing at a destroyed cell.
-        Holds ReportStale(std::string_view site, std::uintptr_t reference, const Unlink::Stale& stale)
-        {
-            const auto holds = WhatItHolds(stale.cell, stale.cellFormID);
-            const auto count = ++staleReads;
-            const auto kind = ++staleByKind[std::to_underlying(holds)];
-            if (count <= StaleLogLimit || count % 100 == 0) {
-                const auto header = Forms::ReadHeader(stale.cell);
-                std::string now;
-                switch (holds) {
-                case Holds::SameCell:
-                    now = "the same cell again, reloaded at the same address";
-                    break;
-                case Holds::OtherCell:
-                    now = std::format("another live cell, {:08X} (memory reused)", header ? header->formID : 0);
-                    break;
-                case Holds::OldData:
-                    now = "freed memory, old data still readable";
-                    break;
-                case Holds::Overwritten:
-                    now = "freed memory, overwritten";
-                    break;
-                }
-                spdlog::warn("stale read #{} in {}: reference 0x{:X} (formID {:08X}, base {:08X}, flags {:08X}) still "
-                             "points at cell {:08X}, destroyed {} s ago; that memory now holds {} (#{} of this kind)",
-                    count, site, reference, stale.formID, stale.baseFormID, stale.flags, stale.cellFormID,
-                    (GetTickCount64() - stale.time) / 1000, now, kind);
-            }
-            return holds;
-        }
-
         // ID 18365: does the reference's (current or editor) location equal this location or one
         // of its children. Called by the GetInCurrentLocAlias / GetIsEditorLocAlias style condition
         // functions (21656, 21654) while the story manager fills quest aliases.
@@ -79,12 +25,6 @@ namespace StaleParentCellFix::Guards
         bool IsChild(RE::BGSLocation* location, RE::TESObjectREFR* reference, bool current)
         {
             if (reference) {
-                if (const auto parent = Memory::Read<std::uintptr_t>(Address(reference) + Forms::Offset::RefParentCell);
-                    parent && *parent) {
-                    if (const auto stale = Unlink::FindStale(Address(reference), *parent, false)) {
-                        ReportStale("BGSLocation::IsChild", Address(reference), *stale);
-                    }
-                }
                 if (const auto why = Forms::WhyDead(Address(reference)); !why.empty()) {
                     Report::Incident("BGSLocation::IsChild (ID 18365)", why,
                         { { "reference", Address(reference), Kind::Reference },
@@ -170,21 +110,7 @@ namespace StaleParentCellFix::Guards
                         { { "reference", address, Kind::Reference }, { "cell", Address(cell), Kind::Cell } });
                     return;
                 }
-                if (*parent != 0) {
-                    if (const auto stale = Unlink::FindStale(address, *parent, true)) {
-                        const auto holds = ReportStale("TESObjectCELL::AddReference", address, *stale);
-                        // Removing the reference from an unrelated cell would corrupt that cell's list.
-                        if (holds == Holds::OtherCell && *parent != Address(cell)) {
-                            Report::Incident("TESObjectCELL::AddReference (ID 19411)",
-                                "reference's previous parentCell is a destroyed cell whose memory now holds another "
-                                "cell; link cut before adding",
-                                { { "reference", address, Kind::Reference }, { "cell", Address(cell), Kind::Cell } });
-                            *reinterpret_cast<std::uintptr_t*>(address + Forms::Offset::RefParentCell) = 0;
-                        }
-                    }
-                }
-                const auto current = Memory::Read<std::uintptr_t>(address + Forms::Offset::RefParentCell).value_or(0);
-                if (current != 0 && current != Address(cell) && !Forms::IsLiveCell(current)) {
+                if (*parent != 0 && *parent != Address(cell) && !Forms::IsLiveCell(*parent)) {
                     Report::Incident("TESObjectCELL::AddReference (ID 19411)",
                         "reference's previous parentCell is not live; link cut before adding",
                         { { "reference", address, Kind::Reference }, { "cell", Address(cell), Kind::Cell } });

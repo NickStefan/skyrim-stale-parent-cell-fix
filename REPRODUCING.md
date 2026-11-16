@@ -130,7 +130,9 @@ All times are local. Logs are in
   `FF......` deleted leftovers were never dangerous and clearing them was redundant. Cell
   `000095F7` (the mist's) was destroyed with 6 references and no formID-0 one among them. Only
   formID-0 references have been proven stale (the mist, 77 s and 163 s after destruction). The
-  next build logs the first sighting of every formID-0 reference in the persistent lists.
+  next build logs the first sighting of every formID-0 reference in the persistent lists. The
+  stale-read bookkeeping was then removed; only a warning for references still stale after the
+  destructor remains.
 - **2026-11-16 00:24, fix off, stale-read bookkeeping, stress on.** Three unload bursts (00:27:03,
   00:28:55, 00:29:43). Every persistent reference recorded as pointing at a cell just before its
   destruction had been re-pointed by the time the next cell in the same burst was checked, a
