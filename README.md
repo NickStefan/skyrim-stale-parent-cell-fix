@@ -20,11 +20,14 @@ In short (details, IDs and evidence in [FINDINGS.md](FINDINGS.md)):
 4. The cell's destructor only unlinks references still in its list, so the dead reference is left
    pointing at freed memory.
 
-Every reference seen in step 1 so far is a mist object swapped to `AlphaTest` by No More Mist
-(Base Object Swapper), and a run with `_NoMoreMist_SWAP.ini` removed produced none, so that swap
-appears to create the conditions for the bug. How it gets them into the persistent list is still
-open. The crash itself does not depend on it: any reference that goes through these steps is
-affected.
+Two sources of step 1 are known (see [FINDINGS.md](FINDINGS.md#sources-of-the-leftovers)):
+
+- Mist objects swapped to `AlphaTest` by No More Mist (Base Object Swapper). With the swap removed,
+  or rewritten as a disable, none appear.
+- Objects created at runtime (spawned references with bases made at runtime, most likely leveled
+  actors placed by some mod) that were later deleted, seen in the city of Northpoint.
+
+The crash does not depend on the source: any reference that goes through these steps is affected.
 
 ## What the plugin does
 
@@ -35,8 +38,16 @@ game skips: removes the reference from the cell if the caller asked for that, an
 handles. Nothing else is patched.
 
 Each fix is logged as "fixed released reference 0x... (base ..., flags ..., position (...)) still
-pointing at cell ...: cleared its parentCell", and the first one in a session shows a HUD message
-(`[General] bNotifications` in `StaleParentCellFix.ini`). The hook checks the function's first
+pointing at cell ...: cleared its parentCell", followed by a line naming what it was: the
+reference's type, its base (type, name, editor ID, and the plugin it is from or "created at
+runtime"), the leveled actor it was made from if any, and the cell with its worldspace and grid.
+These details are only gathered when the fix runs, for the first 50 fixes; forms the game has
+already let go are not followed. The first fix in a session shows a HUD message
+(`[General] bNotifications` in `StaleParentCellFix.ini`).
+
+The log says "cleared a stale cell link", not "prevented a crash": a stale link only crashes if
+something follows it after the cell's memory is reused, which happened with the mist (four crash
+logs) but cannot be proven for each fix. The hook checks the function's first
 bytes before patching; on a mismatch (another mod or game version) it logs an error and does
 nothing.
 
@@ -51,6 +62,11 @@ sets the initially-disabled flag and moves the reference 30000 units down. Put t
 files in `BaseObjectSwapperFixer/SWAPS_IN/`, run `python3 BaseObjectSwapperFixer/fix_alphatest.py`,
 and install the files from `SWAPS_OUT/` over the originals. With the rewritten No More Mist file
 the leftovers no longer appear; the DLL still covers any other source.
+
+Only active `<form>|AlphaTest` lines in `[Forms...]` / `[References...]` sections are changed.
+Seasons of Skyrim swap files (`_SUM.ini`, `_WIN.ini`, ...) are copied unchanged: their format is
+only `base|swap` and they swap per season at model load, so they have no disable to use, and BOS
+cannot hide by season.
 
 ## Build (Linux / SteamOS)
 

@@ -80,6 +80,63 @@ the swap of these mist objects to `AlphaTest` appears to be what creates the con
 (step 1). One session so far. The engine bug in steps 3 and 4 is independent of it: any released
 reference left in the persistent list would go stale the same way.
 
+## Sources of the leftovers
+
+What the fix acts on: the release routine (36459) is handed a reference whose formID is already 0
+and that still points at a cell. A formID of 0 means the reference was released before; the first
+release clears `parentCell`, so something linked it to a cell again afterwards (for the mist: the
+loader, re-adding it from the worldspace's persistent list). A log line without "removed it from
+the cell" means the caller passed `removeFromCell` false: the cell-unload path (19113), right after
+19235 took the reference out of the cell's list. Each fix is therefore a reference the destructor
+would have left pointing at the freed cell. The Dawnstar `FF......` leftovers of 2026-11-15/16
+(false alarms of the early, broader fix) never meet this condition: they kept their formIDs and
+stayed in the cell's list.
+
+A stale link only crashes if something follows it after the cell's memory is reused (a return to
+the cell, or a Change Location quest testing the reference). The mist did, four times; that
+cannot be shown for each fix.
+
+### Mist swapped to `AlphaTest` (Base Object Swapper)
+
+See "What is still unknown" above. The No More Mist swaps rewritten as disables by
+`BaseObjectSwapperFixer/fix_alphatest.py` (`[Transforms]` with the same conditions,
+`posR(0.0,0.0,-30000.0),flags(0x00000800)`) still hide the objects and produce no leftovers
+(2026-11-16 13:24). The same tool converted the other installed swap files that use `AlphaTest`,
+including Dark Dungeons for Draugr Crypts (420 light and torch swaps, light to static, like the
+mist's movable static to static); those are not play-tested for leftovers yet.
+
+Seasons of Skyrim swap files (`ZZZ_Unfrozen_Northpoint_SUM.ini` and others) also swap to
+`AlphaTest` (by formID, `0x58E92~Skyrim.esm`), but cannot be rewritten: Seasons' format is only
+`base|swap` per record type (no properties, flags or conditions), applied when a reference's model
+is queued (12910) and undone when the season changes, and it skips disabled references. BOS
+conditions cover location, region, keyword, cell and worldspace, not season, and BOS applies once
+at initialization, so it cannot hide by season either. Those Northpoint swaps are static to static
+and have not been seen to leave leftovers.
+
+### Objects created at runtime (Northpoint, 2026-11-22)
+
+Three references fixed together at 00:02:31, in cell `2DC27287`, which is `Northpoint.esp`'s
+exterior cell `04C27287` of its own worldspace `NorthpointWorld` at grid (-45, -26), where all
+three positions fall (Z about -16100 to -16300 there is street level):
+
+| base | flags | position |
+| --- | --- | --- |
+| `FF003D27` | `0x29` | (-182908, -105948, -16110) |
+| `FF003D2F` | `0x29` | (-183574, -105337, -16333) |
+| `FF003D44` | `0x29` | (-183379, -105881, -16187) |
+
+- The bases are forms created at runtime (`FF......`). The usual way a base is created at runtime
+  is placing a leveled actor, which makes a temporary actor base. Three such references within
+  about 700 units of each other, deleted (`0x20`) and released together, fit a small group of
+  spawned actors cleaned up later.
+- Not the Seasons swap: it was winter and the Northpoint swap files cover summer, autumn and spring
+  only; the bases are not `AlphaTest`.
+- Not Northpoint itself: `Northpoint.esp` ships only two quest fragment scripts.
+- Not Dynamic Underwater Fish (spawns vanilla critter spawners and CC fish around a player whose
+  head is under water): there was no swimming; the player was walking in the city.
+- No SKSE log of the session names the three formIDs, so the spawning mod is unknown. The log line
+  now names the base, its type and the leveled actor it was made from, to identify it next time.
+
 ## Engine details
 
 | ID | what | notes |

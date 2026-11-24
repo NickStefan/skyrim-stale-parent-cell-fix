@@ -116,6 +116,8 @@ stale, a line like:
 ```
 fixed released reference 0x... (base 00058E92, flags 0000002B, position (...)) still pointing at
 cell 000095F7: cleared its parentCell (#1)
+  #1: REFR with base STAT 00058E92 (AlphaTest) from Skyrim.esm; cell CELL 000095F7, in worldspace
+  0000003C (Tamriel) at grid (9, -2)
 ```
 
 and, the first time in a session, the HUD message "StaleParentCellFix: fixed a stale cell
@@ -129,7 +131,14 @@ To see the crash again for comparison, remove the DLL.
 
 All times are local. Logs are in
 `Documents/My Games/Skyrim Special Edition/SKSE/` (`StaleParentCellFix.log`, `crash-*.log`).
-Every session from 2026-11-16 11:18 on ran with stress mode off, around Tundra Homestead.
+Every session from 2026-11-16 11:18 on ran with stress mode off, around Tundra Homestead, unless
+noted.
+
+- **2026-11-21 22:57, fix-only DLL, rewritten swap files, Northpoint (walking in the city, winter).**
+  At 00:02:31 the fix cleared three released references with bases created at runtime
+  (`FF003D27`, `FF003D2F`, `FF003D44`) in Northpoint's cell `2DC27287` (`NorthpointWorld`, grid
+  (-45, -26)); no crash. A second source of leftovers besides the `AlphaTest` swap; see FINDINGS.md,
+  "Sources of the leftovers".
 
 - **2026-11-16 13:24, fix-only DLL, swap files rewritten by `fix_alphatest.py`.** The usual loop:
   nothing logged after startup, no HUD message, no crash. The rewritten swaps still hide their

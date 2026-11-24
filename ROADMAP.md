@@ -19,9 +19,15 @@ Rough order of work. Things move up or down as test reports show what matters.
 - Fix-only build play-tested with the original swap file (mist fixed, no crash) and with the swap
   files rewritten by `BaseObjectSwapperFixer/fix_alphatest.py` (nothing to fix).
 
+- A second source of leftovers seen: objects created at runtime, deleted, in Northpoint
+  (2026-11-22). The fix handled them; the log line now names the base, its plugin or runtime
+  origin, the leveled actor it was made from and the cell, gathered only when the fix runs.
+
 ## Next
 
-- Report to the No More Mist / Base Object Swapper authors.
+- Identify the Northpoint spawner from the next detailed log line.
+- Report to the No More Mist / Base Object Swapper authors, and the engine bug to people who know
+  the engine (Engine Fixes, powerofthree), for an independent check.
 
 ## Before release: game versions
 
